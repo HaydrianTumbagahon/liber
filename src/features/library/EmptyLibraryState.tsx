@@ -1,6 +1,18 @@
 import { Button } from '../../components/ui/Button.tsx'
+import { motion } from 'framer-motion'
+import { useReducedMotion } from 'framer-motion'
 
-export function EmptyLibraryState({ onAddBooks }: { onAddBooks: () => void }) {
+export const ADD_BOOKS_MODAL_LAYOUT_ID = 'add-books-modal'
+
+export function EmptyLibraryState({
+  onAddBooks,
+  folderStorage = false,
+}: {
+  onAddBooks: () => void
+  folderStorage?: boolean
+}) {
+  const reduceMotion = useReducedMotion()
+
   return (
     <section className="library-empty" aria-labelledby="library-empty-title">
       <svg
@@ -48,9 +60,25 @@ export function EmptyLibraryState({ onAddBooks }: { onAddBooks: () => void }) {
       <h2 id="library-empty-title" className="library-empty__title">
         Your library is empty
       </h2>
-      <p className="library-empty__prompt">Add your first light novel</p>
-      <Button variant="primary" size="large" onClick={onAddBooks}>
-        Choose an EPUB
+      <p className="library-empty__prompt">
+        {folderStorage
+          ? 'Copy book folders into liber/library/ or use Add Books, then select Resync.'
+          : 'Add your first light novel'}
+      </p>
+      <Button
+        variant="primary"
+        size="large"
+        whileTap={undefined}
+        onClick={onAddBooks}
+      >
+        {!reduceMotion && (
+          <motion.span
+            className="library-add-morph"
+            layoutId={ADD_BOOKS_MODAL_LAYOUT_ID}
+            aria-hidden="true"
+          />
+        )}
+        <span className="library-empty__add-label">Choose an EPUB</span>
       </Button>
     </section>
   )

@@ -1,4 +1,4 @@
-import { motion, useReducedMotion } from 'framer-motion'
+import { Button } from './Button.tsx'
 
 type ToggleProps = {
   label: string
@@ -13,23 +13,20 @@ export function Toggle({
   onChange,
   disabled = false,
 }: ToggleProps) {
-  const reduceMotion = useReducedMotion()
-
   return (
-    <motion.button
+    <Button
       type="button"
+      variant="ghost"
       role="switch"
       aria-checked={checked}
       className="ui-toggle"
       disabled={disabled}
       onClick={() => onChange(!checked)}
-      whileTap={reduceMotion ? undefined : { scale: 0.97 }}
-      transition={{ duration: 0.08 }}
     >
       <span className="ui-toggle__track" data-checked={checked}>
         <span className="ui-toggle__thumb" />
       </span>
       <span>{label}</span>
-    </motion.button>
+    </Button>
   )
 }

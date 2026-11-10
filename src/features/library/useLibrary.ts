@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import type { Book } from '../../data/mockBooks.ts'
 import { db } from '../../data/database.ts'
+import { storageProvider } from '../../lib/storage/index.ts'
 import type {
   DatabaseBook,
   DatabaseProgress,
@@ -18,6 +19,7 @@ type LibrarySnapshot = {
 }
 
 async function readLibrary(): Promise<LibrarySnapshot[]> {
+  await storageProvider.listLibrary()
   const books = await db.books.orderBy('dateAdded').toArray()
 
   return Promise.all(

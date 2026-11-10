@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import type { ChangeEvent } from 'react'
+import type { ChangeEvent, DragEvent } from 'react'
 import {
   AlertCircle,
   Check,
@@ -8,7 +8,7 @@ import {
   Upload,
 } from 'lucide-react'
 import { Button } from '../../components/ui/Button.tsx'
-import { Dialog } from '../../components/ui/Dialog.tsx'
+import { Modal } from '../../components/ui/Modal.tsx'
 import type {
   DirectoryImportResult,
   ImportEpubResult,
@@ -37,6 +37,7 @@ type AddBooksDialogProps = {
     handle: FileSystemDirectoryHandle,
   ) => Promise<DirectoryImportResult>
   onImportComplete: (message: string) => void
+  layoutId?: string
 }
 
 export function AddBooksDialog({
@@ -45,12 +46,14 @@ export function AddBooksDialog({
   onImport,
   onImportDirectory,
   onImportComplete,
+  layoutId,
 }: AddBooksDialogProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const sequence = useRef(0)
   const [items, setItems] = useState<ImportItem[]>([])
   const [processing, setProcessing] = useState(false)
   const [folderNotice, setFolderNotice] = useState('')
+  const [draggingFiles, setDraggingFiles] = useState(false)
   const supportsFolderPicker =
     typeof window !== 'undefined' &&
     typeof (window as DirectoryPickerWindow).showDirectoryPicker === 'function'
@@ -131,6 +134,18 @@ export function AddBooksDialog({
     event.currentTarget.value = ''
   }
 
+  const handleDrop = (event: DragEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    setDraggingFiles(false)
+    if (!processing) processFiles(Array.from(event.dataTransfer.files))
+  }
+
+  const handleDragLeave = (event: DragEvent<HTMLButtonElement>) => {
+    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+      setDraggingFiles(false)
+    }
+  }
+
   const chooseFolder = async () => {
     const picker = (window as DirectoryPickerWindow).showDirectoryPicker
     if (!picker) return
@@ -184,11 +199,18 @@ export function AddBooksDialog({
   }
 
   return (
-    <Dialog open={open} title="Add books" onOpenChange={onOpenChange}>
+    <Modal
+      open={open}
+      title="Add books"
+      onOpenChange={onOpenChange}
+      motionPreset="springBounce"
+      layoutId={layoutId}
+      className="library-add-modal"
+    >
       <div className="library-import">
-        <p className="library-import__note">
-          EPUB metadata, reading order, and cover images are extracted on this
-          device. Book text is not rendered in this phase.
+        <p className="library-import__note library-import__note--centered">
+          EPUB files are processed on this device. Choose one or more files, or
+          drop them below.
         </p>
         <input
           ref={inputRef}
@@ -201,30 +223,51 @@ export function AddBooksDialog({
           aria-hidden="true"
           onChange={handleFileChange}
         />
-        <div className="library-import__actions">
-          <Button
-            type="button"
-            variant="primary"
-            size="large"
-            disabled={processing}
-            onClick={() => inputRef.current?.click()}
-          >
-            <Upload size={17} aria-hidden="true" />
-            Choose EPUB files
-          </Button>
-          {supportsFolderPicker && (
+        <Button
+          type="button"
+          variant="primary"
+          size="large"
+          className={`library-import__dropzone${draggingFiles ? ' is-dragging' : ''}`}
+          aria-label="Choose EPUB files or drop them here"
+          disabled={processing}
+          onClick={() => inputRef.current?.click()}
+          onDragEnter={(event) => {
+            event.preventDefault()
+            setDraggingFiles(true)
+          }}
+          onDragOver={(event) => event.preventDefault()}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+          {processing ? (
+            <LoaderCircle
+              size={24}
+              className="library-import__dropzone-icon is-spinning"
+              aria-hidden="true"
+            />
+          ) : (
+            <Upload size={24} aria-hidden="true" />
+          )}
+          <span className="library-import__dropzone-title">
+            {processing ? 'Processing EPUB files' : 'Choose EPUB files'}
+          </span>
+          <span className="library-import__dropzone-hint">
+            {draggingFiles ? 'Drop files to import' : 'or drop EPUB files here'}
+          </span>
+        </Button>
+        {supportsFolderPicker && (
+          <div className="library-import__actions">
             <Button
               type="button"
               variant="secondary"
-              size="large"
               disabled={processing}
               onClick={chooseFolder}
             >
               <FolderOpen size={17} aria-hidden="true" />
-              Choose folder
+              Choose folder instead
             </Button>
-          )}
-        </div>
+          </div>
+        )}
         {folderNotice && (
           <p className="library-import__notice" role="status">
             {folderNotice}
@@ -277,6 +320,6 @@ export function AddBooksDialog({
           </ol>
         )}
       </div>
-    </Dialog>
+    </Modal>
   )
 }

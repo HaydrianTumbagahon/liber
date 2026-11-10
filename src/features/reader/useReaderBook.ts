@@ -1,5 +1,6 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '../../data/database.ts'
+import { storageProvider } from '../../lib/storage/index.ts'
 import type {
   DatabaseBook,
   DatabaseProgress,
@@ -18,6 +19,8 @@ export type ReaderBookSnapshot = {
 
 async function readReaderBook(bookId: string | undefined) {
   if (!bookId) return undefined
+  await storageProvider.listLibrary()
+  await storageProvider.readProgress()
   const book = await db.books.get(bookId)
   if (!book) return undefined
 

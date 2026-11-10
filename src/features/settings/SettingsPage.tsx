@@ -8,13 +8,17 @@ import {
   Trash2,
   Upload,
   Download,
+  FolderOpen,
 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
-import { Badge } from '../../components/ui/Badge.tsx'
 import { Button } from '../../components/ui/Button.tsx'
-import { Dialog } from '../../components/ui/Dialog.tsx'
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog.tsx'
+import { Select } from '../../components/ui/Select.tsx'
+import { Slider } from '../../components/ui/Slider.tsx'
 import { SegmentedControl } from '../../components/ui/SegmentedControl.tsx'
 import { Toggle } from '../../components/ui/Toggle.tsx'
+import { useStatusBanner } from '../../components/ui/StatusBanner.tsx'
+import { useToast } from '../../components/ui/Toast.tsx'
 import { useSettings } from '../../lib/theme.tsx'
 import { useSpeechVoices } from '../../lib/useSpeechVoices.ts'
 import type { LibraryLayout, ReadingMode, ThemeMode } from '../../lib/theme.tsx'
@@ -25,6 +29,12 @@ import {
   seedMockLibrary,
 } from '../../data/libraryRepository.ts'
 import { defaultSettings } from '../../lib/theme.tsx'
+import { useLenisLock } from '../../lib/LenisProvider.tsx'
+import {
+  showLibraryDirectoryPicker,
+  storageProvider,
+} from '../../lib/storage/index.ts'
+import type { StorageStatus } from '../../lib/storage/index.ts'
 
 const themeOptions = [
   { label: 'Light', value: 'light' },
@@ -65,6 +75,9 @@ function SettingsSection({
 export function SettingsPage() {
   const navigate = useNavigate()
   const reduceMotion = useReducedMotion()
+  const acquireLenisLock = useLenisLock()
+  const statusBanner = useStatusBanner()
+  const showToast = useToast()
   const { settings, updateSettings } = useSettings()
   const { voices, supported: speechSupported } = useSpeechVoices()
   const settingsRef = useRef<HTMLElement | null>(null)
@@ -74,6 +87,13 @@ export function SettingsPage() {
   const [resyncing, setResyncing] = useState(false)
   const [devBusy, setDevBusy] = useState(false)
   const [statusMessage, setStatusMessage] = useState('')
+  const [folderStatus, setFolderStatus] = useState<StorageStatus>('not-configured')
+  const [folderName, setFolderName] = useState<string | null>(null)
+  const [fallbackMode, setFallbackMode] = useState(false)
+  const [folderBusy, setFolderBusy] = useState(false)
+  const [pendingBackup, setPendingBackup] = useState<File | null>(null)
+  const [backupImportOpen, setBackupImportOpen] = useState(false)
+  const backupInputRef = useRef<HTMLInputElement>(null)
   const [storageInfo, setStorageInfo] = useState({
     usage: 0,
     quota: 0,
@@ -89,6 +109,22 @@ export function SettingsPage() {
     speechSupported && voices.length === 0
       ? 'No speech voices are available in this browser yet.'
       : null
+
+  const refreshFolderStatus = () => {
+    setFolderStatus(storageProvider.getStatus())
+    setFolderName(storageProvider.getFolderName())
+    setFallbackMode(storageProvider.isUsingFallback())
+  }
+
+  useEffect(() => {
+    let active = true
+    void storageProvider.init().then(() => {
+      if (active) refreshFolderStatus()
+    })
+    return () => {
+      active = false
+    }
+  }, [])
 
   useEffect(() => {
     if (!('storage' in navigator) || !('estimate' in navigator.storage)) {
@@ -114,7 +150,8 @@ export function SettingsPage() {
   const formatBytes = (bytes: number) => {
     if (!bytes) return '0 MB'
     const megabytes = bytes / (1024 * 1024)
-    if (megabytes < 1) return `${Math.max(1, Math.round(megabytes * 10) / 10)} KB`
+    if (megabytes < 1)
+      return `${Math.max(1, Math.round(megabytes * 10) / 10)} KB`
     return `${Math.round(megabytes * 10) / 10} MB`
   }
 
@@ -147,6 +184,11 @@ export function SettingsPage() {
 
   useEffect(() => {
     if (!desktopMode) return
+    return acquireLenisLock()
+  }, [acquireLenisLock, desktopMode])
+
+  useEffect(() => {
+    if (!desktopMode) return
     const previouslyFocused =
       document.activeElement instanceof HTMLElement
         ? document.activeElement
@@ -163,22 +205,142 @@ export function SettingsPage() {
   const resync = async () => {
     setResyncing(true)
     setStatusMessage('')
+    statusBanner.working('Resyncing library…')
     try {
       const result = await resyncLibrary()
-      setStatusMessage(
+      if (
+        result.added === 0 &&
+        result.relinked === 0 &&
+        result.missing === 0 &&
+        (result.removed ?? 0) === 0 &&
+        result.errors === 0 &&
+        result.permissionDenied === 0
+      ) {
+        statusBanner.hide()
+        showToast({
+          message: 'Library is up to date. No new updates found.',
+          variant: 'info',
+        })
+        return
+      }
+      statusBanner.done(
         result.permissionDenied > 0
           ? 'Folder access was denied. Stored EPUB copies were checked.'
-          : `Synced: ${result.added} added, ${result.relinked} relinked, ${result.missing} missing.`,
+          : `Synced: ${result.added} books added, ${result.relinked} files changed, ${(result.removed ?? 0) + result.missing} files missing.`,
       )
     } catch (error) {
-      setStatusMessage(
-        error instanceof Error
-          ? error.message
-          : 'Could not resync the library.',
-      )
+      statusBanner.hide()
+      showToast({
+        variant: 'error',
+        message:
+          error instanceof Error
+            ? error.message
+            : 'Could not resync the library.',
+      })
     } finally {
       setResyncing(false)
     }
+  }
+
+  const changeLibraryFolder = async () => {
+    setFolderBusy(true)
+    try {
+      const directory = await showLibraryDirectoryPicker()
+      const status = await storageProvider.connect(directory)
+      refreshFolderStatus()
+      if (status !== 'connected') {
+        showToast({
+          message: 'Folder access was not granted. Choose a regular folder and allow read/write access.',
+          variant: 'warning',
+        })
+        return
+      }
+      const result = await storageProvider.listLibrary()
+      showToast({
+        message:
+          result.books.length > 0
+            ? `Library restored: ${result.books.length} ${result.books.length === 1 ? 'book' : 'books'}.`
+            : 'Library folder changed.',
+        variant: 'success',
+      })
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === 'AbortError')) {
+        showToast({
+          message:
+            error instanceof Error
+              ? error.message
+              : 'This folder could not be used. Choose a regular folder.',
+          variant: 'error',
+        })
+      }
+    } finally {
+      setFolderBusy(false)
+      refreshFolderStatus()
+    }
+  }
+
+  const reconnectLibraryFolder = async () => {
+    setFolderBusy(true)
+    try {
+      const status = await storageProvider.reconnect()
+      refreshFolderStatus()
+      if (status === 'connected') {
+        await storageProvider.listLibrary()
+        showToast({ message: 'Library folder reconnected.', variant: 'success' })
+      } else {
+        showToast({
+          message:
+            status === 'folder-missing'
+              ? 'The folder is missing. Choose it again to restore the library.'
+              : 'Folder access was not granted. Try reconnecting again.',
+          variant: 'warning',
+        })
+      }
+    } catch (error) {
+      showToast({
+        message:
+          error instanceof Error ? error.message : 'Could not reconnect the folder.',
+        variant: 'error',
+      })
+    } finally {
+      setFolderBusy(false)
+      refreshFolderStatus()
+    }
+  }
+
+  const exportBackup = async () => {
+    try {
+      const backup = await storageProvider.exportData()
+      const url = URL.createObjectURL(backup)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = 'liber-backup.json'
+      link.click()
+      URL.revokeObjectURL(url)
+      showToast({ message: 'Data backup exported.', variant: 'success' })
+    } catch (error) {
+      showToast({
+        message:
+          error instanceof Error ? error.message : 'Could not export the data backup.',
+        variant: 'error',
+      })
+    }
+  }
+
+  const selectBackup = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0]
+    event.currentTarget.value = ''
+    if (!file) return
+    setPendingBackup(file)
+    setBackupImportOpen(true)
+  }
+
+  const importBackup = async () => {
+    if (!pendingBackup) return
+    await storageProvider.importData(pendingBackup, { replaceExisting: true })
+    setPendingBackup(null)
+    setBackupImportOpen(false)
+    showToast({ message: 'Data backup imported.', variant: 'success' })
   }
 
   const clearCache = async () => {
@@ -247,10 +409,12 @@ export function SettingsPage() {
 
   return (
     <>
-      <button
+      <Button
         type="button"
+        variant="ghost"
         className="settings-backdrop"
         aria-label="Close settings"
+        whileTap={undefined}
         onClick={() => navigate('/')}
       />
       <motion.aside
@@ -259,6 +423,7 @@ export function SettingsPage() {
         role={desktopMode ? 'dialog' : 'main'}
         aria-modal={desktopMode ? true : undefined}
         aria-labelledby="settings-page-title"
+        data-lenis-prevent={desktopMode ? '' : undefined}
         tabIndex={desktopMode ? -1 : undefined}
         onKeyDown={containDesktopFocus}
         initial={reduceMotion ? false : { x: '100%' }}
@@ -273,7 +438,6 @@ export function SettingsPage() {
             className="settings-page__back"
             onClick={() => navigate('/')}
             aria-label="Back to Library"
-            title="Back to Library"
           >
             <ArrowLeft size={18} aria-hidden="true" />
           </Button>
@@ -314,30 +478,29 @@ export function SettingsPage() {
         </SettingsSection>
 
         <SettingsSection title="Text-to-speech">
-          <label className="settings-slider" htmlFor="default-speed">
+          <div className="settings-slider">
             <span className="settings-slider__label">Default speed</span>
-            <output className="settings-slider__value" htmlFor="default-speed">
+            <output className="settings-slider__value">
               {settings.defaultSpeed.toFixed(1)}x
             </output>
-            <input
-              id="default-speed"
-              type="range"
-              min="0.7"
-              max="2"
-              step="0.1"
+            <Slider
+              label="Default speech speed"
               value={settings.defaultSpeed}
-              onChange={(event) =>
-                updateSettings({ defaultSpeed: Number(event.target.value) })
-              }
+              min={0.7}
+              max={2}
+              step={0.1}
+              valueText={`${settings.defaultSpeed.toFixed(1)}x`}
+              onChange={(defaultSpeed) => updateSettings({ defaultSpeed })}
             />
             <span className="settings-slider__range" aria-hidden="true">
               <span>0.7x</span>
               <span>2.0x</span>
             </span>
-          </label>
-          <label className="settings-row settings-row--voice">
+          </div>
+          <div className="settings-row settings-row--voice">
             <span className="settings-row__label">Preferred voice</span>
-            <select
+            <Select
+              label="Preferred voice"
               value={
                 voices.some(
                   (voice) => voice.voiceURI === settings.preferredVoice,
@@ -345,21 +508,21 @@ export function SettingsPage() {
                   ? settings.preferredVoice
                   : ''
               }
+              options={[
+                { value: '', label: 'System default' },
+                ...voices.map((voice) => ({
+                  value: voice.voiceURI,
+                  label: `${voice.name} (${voice.lang})`,
+                })),
+              ]}
               disabled={!speechSupported}
-              onChange={(event) =>
+              onChange={(preferredVoice) =>
                 updateSettings({
-                  preferredVoice: event.target.value,
+                  preferredVoice,
                 })
               }
-            >
-              <option value="">System default</option>
-              {voices.map((voice) => (
-                <option key={voice.voiceURI} value={voice.voiceURI}>
-                  {voice.name} ({voice.lang})
-                </option>
-              ))}
-            </select>
-          </label>
+            />
+          </div>
           {!speechSupported && (
             <p className="settings-status" role="status">
               Speech synthesis is not available in this browser.
@@ -384,12 +547,57 @@ export function SettingsPage() {
           </div>
         </SettingsSection>
 
+        <SettingsSection title="Library folder">
+          <div className="settings-storage-row">
+            <div>
+              <span className="settings-storage-row__label">
+                {fallbackMode ? 'Storage mode' : 'Connected folder'}
+              </span>
+              <strong>
+                {fallbackMode
+                  ? 'In-app storage'
+                  : folderName ??
+                    (folderStatus === 'needs-permission'
+                      ? 'Permission needed'
+                      : folderStatus === 'folder-missing'
+                        ? 'Folder missing'
+                        : folderStatus === 'unsupported'
+                          ? 'Not supported'
+                          : 'Not connected')}
+              </strong>
+            </div>
+            <span className="settings-storage-row__label">
+              {fallbackMode ? 'Ready' : folderStatus}
+            </span>
+          </div>
+          <div className="settings-actions">
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={folderBusy || folderStatus === 'unsupported'}
+              onClick={() => void changeLibraryFolder()}
+            >
+              <FolderOpen size={16} aria-hidden="true" />
+              {folderBusy ? 'Connecting' : 'Change folder'}
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={folderBusy || folderStatus === 'unsupported' || fallbackMode}
+              onClick={() => void reconnectLibraryFolder()}
+            >
+              {folderBusy ? 'Reconnecting' : 'Reconnect'}
+            </Button>
+          </div>
+        </SettingsSection>
+
         <SettingsSection title="Data">
           <div className="settings-storage-row">
             <div>
               <span className="settings-storage-row__label">Storage used</span>
               <strong>
-                {formatBytes(storageInfo.usage)} / {formatBytes(storageInfo.quota)}
+                {formatBytes(storageInfo.usage)} /{' '}
+                {formatBytes(storageInfo.quota)}
               </strong>
             </div>
             <Button
@@ -429,22 +637,33 @@ export function SettingsPage() {
               {resyncing ? 'Resyncing' : 'Resync library'}
             </Button>
           </div>
-          <div className="settings-actions settings-actions--later">
-            <div className="settings-later-item">
-              <Button type="button" variant="secondary" disabled>
-                <Download size={16} aria-hidden="true" />
-                Export progress
-              </Button>
-              <Badge>Coming later</Badge>
-            </div>
-            <div className="settings-later-item">
-              <Button type="button" variant="secondary" disabled>
-                <Upload size={16} aria-hidden="true" />
-                Import progress
-              </Button>
-              <Badge>Coming later</Badge>
-            </div>
-          </div>
+          {fallbackMode && (
+            <>
+              <input
+                ref={backupInputRef}
+                className="settings-import-input"
+                type="file"
+                accept=".json,application/json"
+                tabIndex={-1}
+                aria-hidden="true"
+                onChange={selectBackup}
+              />
+              <div className="settings-actions">
+                <Button type="button" variant="secondary" onClick={() => void exportBackup()}>
+                  <Download size={16} aria-hidden="true" />
+                  Export data
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => backupInputRef.current?.click()}
+                >
+                  <Upload size={16} aria-hidden="true" />
+                  Import data
+                </Button>
+              </div>
+            </>
+          )}
           {statusMessage && (
             <p className="settings-status" role="status">
               <Check size={16} aria-hidden="true" />
@@ -489,42 +708,35 @@ export function SettingsPage() {
           </SettingsSection>
         )}
 
-        <Dialog
+        <ConfirmDialog
           open={clearDialogOpen}
           title="Clear cached data?"
+          description="This will remove cached book files from this device. This action cannot be undone."
+          confirmLabel="Clear cache"
+          destructive
           onOpenChange={setClearDialogOpen}
-        >
-          <p className="reading-text">
-            This will remove cached book files from this device. This action
-            cannot be undone.
-          </p>
-          <Button
-            type="button"
-            variant="primary"
-            className="settings-clear-confirm"
-            onClick={clearCache}
-          >
-            Clear cache
-          </Button>
-        </Dialog>
-        <Dialog
+          onConfirm={clearCache}
+        />
+        <ConfirmDialog
+          open={backupImportOpen}
+          title="Import data backup?"
+          description="This replaces the settings and reading progress currently stored in this browser."
+          confirmLabel="Import backup"
+          onOpenChange={(open) => {
+            setBackupImportOpen(open)
+            if (!open) setPendingBackup(null)
+          }}
+          onConfirm={importBackup}
+        />
+        <ConfirmDialog
           open={resetDialogOpen}
           title="Reset local database?"
+          description="This removes all stored books and reading progress on this device."
+          confirmLabel="Reset local database"
+          destructive
           onOpenChange={setResetDialogOpen}
-        >
-          <p className="reading-text">
-            This removes all stored books and reading progress on this device.
-          </p>
-          <Button
-            type="button"
-            variant="primary"
-            className="settings-clear-confirm"
-            disabled={devBusy}
-            onClick={resetLocalDatabase}
-          >
-            Reset local database
-          </Button>
-        </Dialog>
+          onConfirm={resetLocalDatabase}
+        />
       </motion.aside>
     </>
   )

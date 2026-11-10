@@ -8,7 +8,9 @@ import type {
 } from './database.ts'
 import type { AppSettings } from '../lib/theme.tsx'
 import { parseEpubFile } from './epubParser.ts'
+import type { ParsedEpub } from './epubParser.ts'
 import { mockBooks } from './mockBooks.ts'
+import { registerEpubImportHandler, storageProvider } from '../lib/storage/index.ts'
 
 function createId(prefix: string) {
   const randomId = globalThis.crypto?.randomUUID?.()
@@ -63,6 +65,7 @@ export type ImportEpubInput = {
   file: File
   sourceDirectoryId?: string
   sourceRelativePath?: string
+  bookFolderName?: string
 }
 
 export type ImportEpubResult = {
@@ -88,6 +91,7 @@ export type DirectoryImportResult = {
 export type LibraryResyncResult = {
   scanned: number
   added: number
+  removed?: number
   relinked: number
   verified: number
   missing: number
@@ -150,15 +154,26 @@ function nextAvailableVolumeNumber(volumes: readonly DatabaseVolume[]) {
 
 export async function importEpubFile({
   file,
-  sourceDirectoryId,
-  sourceRelativePath,
+  ...source
 }: ImportEpubInput): Promise<ImportEpubResult> {
   const epub = await parseEpubFile(file)
+  return importParsedEpubFile({ file, epub, ...source })
+}
+
+export async function importParsedEpubFile({
+  file,
+  epub,
+  sourceDirectoryId,
+  sourceRelativePath,
+  bookFolderName,
+}: ImportEpubInput & { epub: ParsedEpub }): Promise<ImportEpubResult> {
   const sourceFileHash = epub.hash
-  const title = epub.seriesName?.trim() || epub.title
+  const title = bookFolderName?.trim() || epub.seriesName?.trim() || epub.title
   const author = epub.author
   const seriesKey = createSeriesKey(title, author)
   const now = new Date().toISOString()
+  const cacheEpubBlob =
+    !(sourceDirectoryId === 'app-root' && storageProvider.isConnected())
 
   return db.transaction(
     'rw',
@@ -221,9 +236,11 @@ export async function importEpubFile({
           ? createStableVolumeKey(title, author, volumeNumber, sourceFileHash)
           : (existingVolume?.stableKey ??
             createStableVolumeKey(title, author, volumeNumber, sourceFileHash))
-      const fileId = sourceFileHash
-        ? `sha256:${sourceFileHash}`
-        : (existingVolume?.fileId ?? createId('file'))
+      const fileId = cacheEpubBlob
+        ? sourceFileHash
+          ? `sha256:${sourceFileHash}`
+          : (existingVolume?.fileId ?? createId('file'))
+        : null
       const previousFileId = existingVolume?.fileId
       const previousStableKey = existingVolume?.stableKey
       const existingFile = previousFileId
@@ -238,12 +255,14 @@ export async function importEpubFile({
         existingVolume.sourceFileHash === sourceFileHash,
       )
 
-      await db.files.put({
-        id: fileId,
-        blob: file,
-        size: file.size,
-        sha256: sourceFileHash,
-      })
+      if (cacheEpubBlob && fileId) {
+        await db.files.put({
+          id: fileId,
+          blob: file,
+          size: file.size,
+          sha256: sourceFileHash,
+        })
+      }
       await db.volumes.put({
         id: volumeId,
         stableKey,
@@ -288,9 +307,11 @@ export async function importEpubFile({
         .toArray()
       const book: DatabaseBook = {
         id: bookId,
-        title: existingBook?.title ?? title,
+        title: bookFolderName?.trim() || existingBook?.title || title,
         author: existingBook?.author ?? author,
-        seriesKey: existingBook?.seriesKey ?? seriesKey,
+        seriesKey: bookFolderName?.trim()
+          ? seriesKey
+          : (existingBook?.seriesKey ?? seriesKey),
         coverBlobId,
         dateAdded: existingBook?.dateAdded ?? now,
         dateModified: now,
@@ -356,6 +377,8 @@ export async function importEpubFile({
     },
   )
 }
+
+registerEpubImportHandler((request) => importParsedEpubFile(request))
 
 type DirectoryFile = {
   file: File
@@ -549,6 +572,28 @@ async function verifyStoredSourceBlobs() {
 }
 
 export async function resyncLibrary(): Promise<LibraryResyncResult> {
+  await storageProvider.init()
+  if (storageProvider.isConnected()) {
+    const previousBookIds = new Set(
+      (await db.books.toArray()).map((book) => book.id),
+    )
+    const result = await storageProvider.listLibrary()
+    const missing = result.books.filter((book) => book.missingFile).length
+    return {
+      scanned: result.volumes.length,
+      added: result.books.filter((book) => !previousBookIds.has(book.id)).length,
+      removed: result.diff.removed.length,
+      relinked: result.diff.changed.length,
+      verified: Math.max(
+        0,
+        result.volumes.length - result.diff.added.length - result.diff.changed.length,
+      ),
+      missing,
+      errors: result.errors.length,
+      permissionDenied: 0,
+    }
+  }
+
   const verified = await verifyStoredSourceBlobs()
   const directory = await db.directories.get('primary')
   let scanned = 0
@@ -647,8 +692,23 @@ export async function saveCoverForBooks(
 
 export async function deleteBooks(bookIds: readonly string[]) {
   const ids = [...new Set(bookIds)]
+  await storageProvider.init()
+  const deletedVolumes = await db.volumes
+    .filter((volume) => ids.includes(volume.bookId))
+    .toArray()
+  const deletedProgressKeys = deletedVolumes.map((volume) => volume.stableKey)
+  if (storageProvider.isConnected()) {
+    await storageProvider.deleteLibraryFiles(
+      deletedVolumes.flatMap((volume) =>
+        volume.sourceDirectoryId === 'app-root' && volume.sourceRelativePath
+          ? [volume.sourceRelativePath]
+          : [],
+      ),
+      { confirmed: true },
+    )
+  }
 
-  return db.transaction(
+  await db.transaction(
     'rw',
     db.books,
     db.volumes,
@@ -691,6 +751,9 @@ export async function deleteBooks(bookIds: readonly string[]) {
       }
     },
   )
+  await storageProvider.writeProgress([], {
+    removeStableKeys: deletedProgressKeys,
+  })
 }
 
 export async function groupBooksIntoSeries(
@@ -703,7 +766,7 @@ export async function groupBooksIntoSeries(
     throw new Error('Select at least two books and enter a series title.')
   }
 
-  return db.transaction(
+  const groupedBookId = await db.transaction(
     'rw',
     db.books,
     db.volumes,
@@ -775,6 +838,10 @@ export async function groupBooksIntoSeries(
       return target.id
     },
   )
+  if (storageProvider.isConnected()) {
+    await storageProvider.writeProgress(await db.progress.toArray())
+  }
+  return groupedBookId
 }
 
 export async function markBookFileMissing(bookId: string) {
@@ -835,7 +902,7 @@ export async function saveProgress(
   }
 
   try {
-    await db.progress.put(progress)
+    await storageProvider.writeProgress(progress)
   } catch (error) {
     const message =
       error instanceof DOMException &&

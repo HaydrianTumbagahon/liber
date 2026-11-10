@@ -1,4 +1,5 @@
 import { db } from './database.ts'
+import { storageProvider } from '../lib/storage/index.ts'
 
 export type EpubChapterAsset = {
   href: string
@@ -15,6 +16,14 @@ export async function readStoredEpubChapter(
   href: string,
 ): Promise<EpubChapterContent> {
   const volume = await db.volumes.get(volumeId)
+  if (
+    volume?.sourceDirectoryId === 'app-root' &&
+    volume.sourceRelativePath &&
+    storageProvider.isConnected()
+  ) {
+    const file = await storageProvider.readBookFile(volume.sourceRelativePath)
+    return readEpubChapter(file, href)
+  }
   if (!volume?.fileId) {
     throw new Error('This volume file is missing. Re-add the EPUB to read it.')
   }

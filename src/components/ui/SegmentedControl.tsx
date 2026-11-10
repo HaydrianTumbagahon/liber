@@ -1,5 +1,5 @@
-import { motion, useReducedMotion } from 'framer-motion'
 import type { KeyboardEvent } from 'react'
+import { Button } from './Button.tsx'
 
 export type SegmentOption<Value extends string> = {
   label: string
@@ -19,8 +19,6 @@ export function SegmentedControl<Value extends string>({
   options,
   onChange,
 }: SegmentedControlProps<Value>) {
-  const reduceMotion = useReducedMotion()
-
   const handleKeyDown = (
     event: KeyboardEvent<HTMLButtonElement>,
     index: number,
@@ -46,20 +44,19 @@ export function SegmentedControl<Value extends string>({
   return (
     <div className="ui-segmented" role="radiogroup" aria-label={label}>
       {options.map((option, index) => (
-        <motion.button
+        <Button
           key={option.value}
           type="button"
+          variant="ghost"
           role="radio"
           aria-checked={value === option.value}
           tabIndex={value === option.value ? 0 : -1}
           className="ui-segmented__option"
           onClick={() => onChange(option.value)}
           onKeyDown={(event) => handleKeyDown(event, index)}
-          whileTap={reduceMotion ? undefined : { scale: 0.97 }}
-          transition={{ duration: 0.08 }}
         >
           {option.label}
-        </motion.button>
+        </Button>
       ))}
     </div>
   )

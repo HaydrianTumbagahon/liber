@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useLayoutEffect } from 'react'
 import type { ReactNode } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '../data/database.ts'
+import { storageProvider } from './storage/index.ts'
 
 export type ThemeMode = 'light' | 'dark' | 'system'
 export type ReadingMode = 'continuous' | 'paginated-ltr' | 'paginated-rtl'
@@ -52,6 +53,7 @@ let settingsInitialization: Promise<void> | null = null
 function initializeSettings() {
   if (!settingsInitialization) {
     settingsInitialization = (async () => {
+      await storageProvider.init()
       const current = await db.settings.get('app')
       if (!current) {
         let initialSettings = defaultSettings
@@ -68,11 +70,7 @@ function initializeSettings() {
           initialSettings = defaultSettings
         }
 
-        await db.settings.put({
-          key: 'app',
-          value: initialSettings,
-          updatedAt: new Date().toISOString(),
-        })
+        await storageProvider.writeSettings(initialSettings)
       }
 
       try {
@@ -96,14 +94,8 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
 
   const updateSettings = async (updates: Partial<AppSettings>) => {
     await initializeSettings()
-    await db.transaction('rw', db.settings, async () => {
-      const current = (await db.settings.get('app'))?.value ?? defaultSettings
-      await db.settings.put({
-        key: 'app',
-        value: { ...current, ...updates },
-        updatedAt: new Date().toISOString(),
-      })
-    })
+    const current = await storageProvider.readSettings()
+    await storageProvider.writeSettings({ ...current, ...updates })
   }
 
   useLayoutEffect(() => {

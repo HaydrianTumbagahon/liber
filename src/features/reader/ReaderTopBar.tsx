@@ -40,7 +40,6 @@ export function ReaderTopBar({
           className="reader-topbar__back"
           onClick={onBack}
           aria-label="Back to book details"
-          title="Back to book details"
         >
           <ArrowLeft size={18} aria-hidden="true" />
         </Button>

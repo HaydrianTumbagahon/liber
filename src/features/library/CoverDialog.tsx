@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ImagePlus } from 'lucide-react'
 import { Button } from '../../components/ui/Button.tsx'
-import { Dialog } from '../../components/ui/Dialog.tsx'
+import { Modal } from '../../components/ui/Modal.tsx'
 
 type CoverDialogProps = {
   open: boolean
@@ -80,7 +80,7 @@ export function CoverDialog({
   }
 
   return (
-    <Dialog open={open} title="Change cover" onOpenChange={onOpenChange}>
+    <Modal open={open} title="Change cover" onOpenChange={onOpenChange}>
       <div className="library-cover-picker">
         <input
           ref={inputRef}
@@ -132,6 +132,6 @@ export function CoverDialog({
             : `Update cover${selectedCount > 1 ? ` for ${selectedCount} books` : ''}`}
         </Button>
       </div>
-    </Dialog>
+    </Modal>
   )
 }

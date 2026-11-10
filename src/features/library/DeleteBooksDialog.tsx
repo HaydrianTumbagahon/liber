@@ -1,5 +1,4 @@
-import { Button } from '../../components/ui/Button.tsx'
-import { Dialog } from '../../components/ui/Dialog.tsx'
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog.tsx'
 
 type DeleteBooksDialogProps = {
   open: boolean
@@ -15,23 +14,14 @@ export function DeleteBooksDialog({
   onConfirm,
 }: DeleteBooksDialogProps) {
   return (
-    <Dialog
+    <ConfirmDialog
       open={open}
       title={`Delete ${selectedCount === 1 ? 'book' : 'books'}?`}
+      description="Deleting the selected books also deletes their reading progress. This cannot be undone."
+      confirmLabel={`Delete ${selectedCount} ${selectedCount === 1 ? 'book' : 'books'}`}
+      destructive
       onOpenChange={onOpenChange}
-    >
-      <p className="reading-text">
-        Deleting the selected books also deletes their reading progress. This
-        cannot be undone.
-      </p>
-      <Button
-        type="button"
-        variant="primary"
-        className="library-delete-confirm"
-        onClick={onConfirm}
-      >
-        Delete {selectedCount} {selectedCount === 1 ? 'book' : 'books'}
-      </Button>
-    </Dialog>
+      onConfirm={onConfirm}
+    />
   )
 }

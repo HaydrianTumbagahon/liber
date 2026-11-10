@@ -1,5 +1,7 @@
 import { List, LocateFixed, Pause, Play, Type } from 'lucide-react'
 import { Button } from '../../components/ui/Button.tsx'
+import { Select } from '../../components/ui/Select.tsx'
+import { Slider } from '../../components/ui/Slider.tsx'
 import type { TtsState } from './ttsEngine.ts'
 
 type ReaderControlsProps = {
@@ -93,34 +95,35 @@ export function ReaderControls({
         Text
       </Button>
       <div className="reader-controls__selects">
-        <label className="reader-controls__select reader-controls__speed">
+        <div className="reader-controls__select reader-controls__speed">
           <span>Speed</span>
           <output>{speed.toFixed(1)}x</output>
-          <input
-            type="range"
-            min="0.7"
-            max="2"
-            step="0.1"
+          <Slider
+            label="Speech speed"
             value={speed}
-            aria-label="Speech speed"
-            onChange={(event) => onSpeedChange(Number(event.target.value))}
+            min={0.7}
+            max={2}
+            step={0.1}
+            valueText={`${speed.toFixed(1)}x`}
+            onChange={onSpeedChange}
           />
-        </label>
-        <label className="reader-controls__select reader-controls__voice">
+        </div>
+        <div className="reader-controls__select reader-controls__voice">
           <span>Voice</span>
-          <select
+          <Select
+            label="Voice"
             value={voices.some((item) => item.voiceURI === voice) ? voice : ''}
+            options={[
+              { value: '', label: 'System default' },
+              ...voices.map((item) => ({
+                value: item.voiceURI,
+                label: `${item.name} (${item.lang})`,
+              })),
+            ]}
             disabled={!speechSupported}
-            onChange={(event) => onVoiceChange(event.target.value)}
-          >
-            <option value="">System default</option>
-            {voices.map((item) => (
-              <option value={item.voiceURI} key={item.voiceURI}>
-                {item.name} ({item.lang})
-              </option>
-            ))}
-          </select>
-        </label>
+            onChange={onVoiceChange}
+          />
+        </div>
       </div>
       {message && (
         <p className="reader-controls__notice" role="status">

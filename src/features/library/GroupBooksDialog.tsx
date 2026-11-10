@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Button } from '../../components/ui/Button.tsx'
-import { Dialog } from '../../components/ui/Dialog.tsx'
+import { Modal } from '../../components/ui/Modal.tsx'
 
 type GroupBooksDialogProps = {
   open: boolean
@@ -48,7 +48,7 @@ export function GroupBooksDialog({
   }
 
   return (
-    <Dialog open={open} title="Group as series" onOpenChange={onOpenChange}>
+    <Modal open={open} title="Group as series" onOpenChange={onOpenChange}>
       <div className="library-group-series">
         <p className="library-import__note">
           Combine {selectedCount} selected books and their volumes under one
@@ -78,6 +78,6 @@ export function GroupBooksDialog({
           {saving ? 'Grouping' : 'Group books'}
         </Button>
       </div>
-    </Dialog>
+    </Modal>
   )
 }

@@ -6,6 +6,11 @@ import { Link } from 'react-router-dom'
 import { Badge } from '../../components/ui/Badge.tsx'
 import { ProgressBar } from '../../components/ui/ProgressBar.tsx'
 import type { Book } from '../../data/mockBooks.ts'
+import {
+  motionDurations,
+  motionEasings,
+  resolveMotionPreset,
+} from '../../lib/motion.ts'
 
 type BookCardProps = {
   book: Book
@@ -132,8 +137,14 @@ export function BookCard({
   return (
     <motion.article
       className={`book-card book-card--${view}${selected ? ' is-selected' : ''}`}
-      animate={{ scale: selected ? 1.02 : 1 }}
-      transition={{ duration: reduceMotion ? 0 : 0.14 }}
+      layout={!reduceMotion}
+      variants={resolveMotionPreset('listItem', Boolean(reduceMotion)).variants}
+      transition={{
+        layout: {
+          duration: reduceMotion ? 0 : motionDurations.base,
+          ease: motionEasings.standard,
+        },
+      }}
       onPointerDown={handlePointerDown}
       onPointerUp={clearLongPressTimer}
       onPointerCancel={clearLongPressTimer}

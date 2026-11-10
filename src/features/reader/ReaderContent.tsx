@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, MouseEvent, TouchEvent } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { Button } from '../../components/ui/Button.tsx'
 import type { ReaderMode } from './ReaderTopBar.tsx'
 import type { LoadedReaderChapter } from './useReaderChapterContent.ts'
 import type { ReaderSegment } from './readerSegments.ts'
@@ -335,6 +336,7 @@ export function ReaderContent({
       <main
         ref={contentRef}
         className="reader-content reader-content--continuous"
+        data-lenis-prevent
         style={style}
       >
         {segments.map((segment, index) => (
@@ -356,6 +358,7 @@ export function ReaderContent({
   return (
     <main
       className={`reader-content reader-content--paginated${isRtl ? ' reader-content--rtl' : ' reader-content--ltr'}`}
+      data-lenis-prevent
       onTouchStart={handleTouchStart}
       onTouchEnd={handleTouchEnd}
       onKeyDown={(event) => {
@@ -370,15 +373,16 @@ export function ReaderContent({
           : 'Left-to-right paginated reading'
       }
     >
-      <button
+      <Button
         type="button"
+        variant="ghost"
         className="reader-turn-zone reader-turn-zone--left"
         aria-label={isRtl ? 'Next page' : 'Previous page'}
         disabled={!canTurn('left')}
         onClick={() => changeFromSide('left')}
       >
         <ChevronLeft size={22} aria-hidden="true" />
-      </button>
+      </Button>
       <div ref={paginatedContentRef} className="reader-page-viewport">
         {segment && (
           <SegmentContent
@@ -390,15 +394,16 @@ export function ReaderContent({
           />
         )}
       </div>
-      <button
+      <Button
         type="button"
+        variant="ghost"
         className="reader-turn-zone reader-turn-zone--right"
         aria-label={isRtl ? 'Previous page' : 'Next page'}
         disabled={!canTurn('right')}
         onClick={() => changeFromSide('right')}
       >
         <ChevronRight size={22} aria-hidden="true" />
-      </button>
+      </Button>
       <span className="reader-page-count" aria-live="polite">
         {pageIndex + 1} / {pageCount} · {activeSegment + 1} / {segments.length}
       </span>

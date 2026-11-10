@@ -1,16 +1,12 @@
 import { useState } from 'react'
-import { BookOpen, Settings2 } from 'lucide-react'
-import { Badge } from '../../components/ui/Badge.tsx'
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { Button } from '../../components/ui/Button.tsx'
-import { Dialog } from '../../components/ui/Dialog.tsx'
-import { Divider } from '../../components/ui/Divider.tsx'
-import { IconButton } from '../../components/ui/IconButton.tsx'
-import { ProgressBar } from '../../components/ui/ProgressBar.tsx'
 import { SegmentedControl } from '../../components/ui/SegmentedControl.tsx'
-import { Skeleton } from '../../components/ui/Skeleton.tsx'
-import { Toggle } from '../../components/ui/Toggle.tsx'
-import { useTheme } from '../../lib/theme.tsx'
 import type { ThemeMode } from '../../lib/theme.tsx'
+import { motionPresets, resolveMotionPreset } from '../../lib/motion.ts'
+import type { MotionPresetName } from '../../lib/motion.ts'
+import { useTheme } from '../../lib/theme.tsx'
+import { StyleguideComponents } from './StyleguideComponents.tsx'
 
 const themeOptions = [
   { label: 'Light', value: 'light' },
@@ -18,99 +14,71 @@ const themeOptions = [
   { label: 'System', value: 'system' },
 ] as const
 
-const viewOptions = [
-  { label: 'List', value: 'list' },
-  { label: 'Grid', value: 'grid' },
-] as const
+const motionDemoNames: readonly Exclude<
+  MotionPresetName,
+  'listContainer' | 'pageTransition'
+>[] = [
+  'fade',
+  'popIn',
+  'slideDown',
+  'slideUp',
+  'listItem',
+  'press',
+  'springBounce',
+]
 
-function PrimitivePreview({ theme }: { theme: 'light' | 'dark' }) {
-  const [toggleOn, setToggleOn] = useState(true)
-  const [view, setView] = useState<'list' | 'grid'>('grid')
-  const [dialogOpen, setDialogOpen] = useState(false)
+function MotionPresetDemo({
+  name,
+}: {
+  name: (typeof motionDemoNames)[number]
+}) {
+  const reduceMotion = useReducedMotion()
+  const [revision, setRevision] = useState(0)
+  const isPress = name === 'press'
+  const preset = isPress
+    ? null
+    : resolveMotionPreset(name, Boolean(reduceMotion))
 
   return (
-    <section className="styleguide-panel" data-theme-preview={theme}>
-      <h2 className="styleguide-panel__title">
-        {theme === 'light' ? 'Light' : 'Dark'} theme
-      </h2>
-
-      <div className="styleguide-panel__group">
-        <p className="styleguide-panel__label">Buttons</p>
-        <Button variant="primary">Open book</Button>
-        <Button variant="secondary">Secondary</Button>
-        <Button variant="ghost">Ghost</Button>
-        <Button variant="icon" aria-label="Open book">
-          <BookOpen size={18} aria-hidden="true" />
-        </Button>
-        <Button variant="primary" size="large">
-          Large target
-        </Button>
-      </div>
-
-      <div className="styleguide-panel__group">
-        <p className="styleguide-panel__label">Status and progress</p>
-        <Badge>12 volumes</Badge>
-        <Badge variant="accent">In progress</Badge>
-        <div className="styleguide-panel__progress">
-          <ProgressBar value={67} label="Reading progress" showValue />
-        </div>
-      </div>
-
-      <div className="styleguide-panel__group">
-        <p className="styleguide-panel__label">Loading state</p>
-        <Skeleton variant="circle" width="2.5rem" />
-        <Skeleton variant="text" width="9rem" />
-        <Skeleton variant="block" width="100%" height="3rem" />
-      </div>
-
-      <Divider />
-
-      <div className="styleguide-panel__group">
-        <p className="styleguide-panel__label">Controls</p>
-        <IconButton label="Library settings">
-          <Settings2 size={18} aria-hidden="true" />
-        </IconButton>
-        <Toggle
-          label="Show reading progress"
-          checked={toggleOn}
-          onChange={setToggleOn}
-        />
-        <SegmentedControl
-          label="Library view"
-          value={view}
-          options={viewOptions}
-          onChange={setView}
-        />
-      </div>
-
-      <div className="styleguide-panel__group">
+    <article className="styleguide-motion-demo">
+      <p className="styleguide-motion-demo__name">{name}</p>
+      {isPress ? (
         <Button
           type="button"
           variant="secondary"
-          onClick={() => setDialogOpen(true)}
+          className="styleguide-motion-demo__target"
+          whileTap={reduceMotion ? undefined : motionPresets.press.whileTap}
+          transition={motionPresets.press.transition}
         >
-          Open dialog
+          Press to preview
         </Button>
-        <Dialog
-          open={dialogOpen}
-          title="Reading settings"
-          onOpenChange={setDialogOpen}
-        >
-          <p className="reading-text">
-            Choose a comfortable pace and return to your book.
-          </p>
-        </Dialog>
-      </div>
-
-      <Divider />
-
-      <div className="styleguide-panel__group">
-        <BookOpen size={18} aria-hidden="true" />
-        <span className="reading-text">
-          A quiet page, ready for the next chapter.
-        </span>
-      </div>
-    </section>
+      ) : (
+        <>
+          <div className="styleguide-motion-demo__stage">
+            <AnimatePresence mode="wait" initial={false}>
+              <motion.div
+                key={revision}
+                className="styleguide-motion-demo__target"
+                variants={preset?.variants}
+                initial="initial"
+                animate="animate"
+                exit="exit"
+                transition={preset?.transition}
+              >
+                {name}
+              </motion.div>
+            </AnimatePresence>
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => setRevision((current) => current + 1)}
+          >
+            Replay
+          </Button>
+        </>
+      )}
+    </article>
   )
 }
 
@@ -132,9 +100,22 @@ export function Styleguide() {
         </div>
       </header>
       <div className="styleguide__panels">
-        <PrimitivePreview theme="light" />
-        <PrimitivePreview theme="dark" />
+        <StyleguideComponents theme="light" />
+        <StyleguideComponents theme="dark" />
       </div>
+      <section
+        className="styleguide-motion"
+        aria-labelledby="motion-presets-title"
+      >
+        <h2 id="motion-presets-title" className="styleguide__section-title">
+          Motion presets
+        </h2>
+        <div className="styleguide-motion-gallery">
+          {motionDemoNames.map((name) => (
+            <MotionPresetDemo key={name} name={name} />
+          ))}
+        </div>
+      </section>
     </main>
   )
 }

@@ -7,14 +7,9 @@ type IconButtonProps = Omit<ButtonProps, 'children' | 'variant' | 'size'> & {
   children: ReactNode
 }
 
-export function IconButton({
-  label,
-  children,
-  title,
-  ...props
-}: IconButtonProps) {
+export function IconButton({ label, children, ...props }: IconButtonProps) {
   return (
-    <Button aria-label={label} title={title ?? label} variant="icon" {...props}>
+    <Button aria-label={label} variant="icon" {...props}>
       {children}
     </Button>
   )

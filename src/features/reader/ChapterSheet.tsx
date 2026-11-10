@@ -1,5 +1,5 @@
 import { Button } from '../../components/ui/Button.tsx'
-import { Dialog } from '../../components/ui/Dialog.tsx'
+import { Modal } from '../../components/ui/Modal.tsx'
 
 export type ChapterJumpItem = {
   id: string
@@ -24,13 +24,13 @@ export function ChapterSheet({
   onSelect,
 }: ChapterSheetProps) {
   return (
-    <Dialog
+    <Modal
       open={open}
       title="Jump to chapter"
       className="reader-chapter-sheet"
       onOpenChange={onOpenChange}
     >
-      <ol className="reader-chapter-list">
+      <ol className="reader-chapter-list" data-lenis-prevent>
         {chapters.map((chapter) => (
           <li key={chapter.id}>
             <Button
@@ -50,6 +50,6 @@ export function ChapterSheet({
           </li>
         ))}
       </ol>
-    </Dialog>
+    </Modal>
   )
 }
