@@ -80,6 +80,7 @@ function toBook(
   return {
     id: book.id,
     title: book.title,
+    sourceTags: book.sourceTags,
     author: book.author,
     coverUrl,
     volumes: bookVolumes,

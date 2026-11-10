@@ -9,6 +9,7 @@ export type BookVolume = {
 export type Book = {
   id: string
   title: string
+  sourceTags?: readonly string[]
   author: string
   coverUrl: string
   volumes: readonly BookVolume[]

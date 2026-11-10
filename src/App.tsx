@@ -19,6 +19,9 @@ import { Styleguide } from './features/settings/Styleguide.tsx'
 import { resolveMotionPreset } from './lib/motion.ts'
 import {
   APP_DIRECTORY_NAME,
+  describeFolderPickerError,
+  installStorageDiagnostics,
+  logFolderAccessSupport,
   showLibraryDirectoryPicker,
   storageProvider,
 } from './lib/storage/index.ts'
@@ -43,11 +46,19 @@ function AppRoutes() {
   const isSettingsRoute = location.pathname === '/settings'
   const [storageGate, setStorageGate] = useState<StorageGateState>('loading')
   const [onboardingMode, setOnboardingMode] = useState<OnboardingMode>('new')
+  const [folderAccessReason, setFolderAccessReason] = useState('')
   const [storageBusy, setStorageBusy] = useState(false)
   const [storageError, setStorageError] = useState('')
   const updateServiceWorkerRef = useRef<
     ((reloadPage?: boolean) => Promise<void>) | null
   >(null)
+  const updateNoticeShown = useRef(false)
+
+  useEffect(() => {
+    const support = logFolderAccessSupport()
+    setFolderAccessReason(support.reason)
+    return installStorageDiagnostics()
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -58,7 +69,7 @@ function AppRoutes() {
       .then(() => {
         if (!active) return
         const status = storageProvider.getStatus()
-        if (storageProvider.isUsingFallback() || status === 'connected') {
+        if (status === 'connected') {
           setStorageGate('app')
         } else if (status === 'unsupported') {
           setOnboardingMode('unsupported')
@@ -109,21 +120,28 @@ function AppRoutes() {
   }, [])
 
   useEffect(() => {
+    const showUpdateNotice = () => {
+      if (updateNoticeShown.current) return
+      updateNoticeShown.current = true
+      showToast({
+        message: 'App update ready. Refresh to install.',
+        variant: 'info',
+        action: {
+          label: 'Refresh',
+          onClick: () => {
+            if (updateServiceWorkerRef.current) {
+              void updateServiceWorkerRef.current(true)
+            }
+          },
+        },
+      })
+    }
+
     const updateSW = registerSW({
       immediate: true,
-      onNeedRefresh() {
-        showToast({
-          message: 'App update ready. Refresh to install.',
-          variant: 'info',
-          action: {
-            label: 'Refresh',
-            onClick: () => {
-              if (updateServiceWorkerRef.current) {
-                void updateServiceWorkerRef.current(true)
-              }
-            },
-          },
-        })
+      onNeedRefresh: showUpdateNotice,
+      onRegisteredSW(_serviceWorkerUrl, registration) {
+        if (registration?.waiting) showUpdateNotice()
       },
     })
     updateServiceWorkerRef.current = updateSW
@@ -146,8 +164,12 @@ function AppRoutes() {
           message: `Library updated: ${added} added, ${removed} removed, ${changed} changed.`,
           variant: 'info',
         })
-      } catch {
-        // Automatic scans are silent; explicit resync surfaces errors.
+      } catch (error) {
+        if (storageProvider.getStatus() !== 'connected') {
+          window.dispatchEvent(new Event('liber-storage-change'))
+        } else if (error instanceof Error && error.name === 'AbortError') {
+          return
+        }
       }
     }
 
@@ -174,27 +196,39 @@ function AppRoutes() {
       const directory = await showLibraryDirectoryPicker()
       const status = await storageProvider.connect(directory)
       if (status !== 'connected') {
-        setStorageError(
-          'Folder access was not granted. Choose or create a regular folder and allow read/write access.',
-        )
+        const message =
+          'Folder access was not granted. Choose or create a regular folder and allow read/write access.'
+        setStorageError(message)
+        showToast({ message, variant: 'warning' })
         return
       }
-      const result = await storageProvider.listLibrary()
+
       setStorageGate('app')
-      if (result.books.length > 0) {
-        showToast({
-          message: `Library restored: ${result.books.length} ${result.books.length === 1 ? 'book' : 'books'}.`,
-          variant: 'success',
-        })
+
+      try {
+        const result = await storageProvider.listLibrary()
+        if (result.books.length > 0) {
+          showToast({
+            message: `Library restored: ${result.books.length} ${result.books.length === 1 ? 'book' : 'books'}.`,
+            variant: 'success',
+          })
+        }
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : 'The library could not be scanned yet, but the folder is connected.'
+        showToast({ message, variant: 'warning' })
       }
     } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') {
-        setStorageError('Folder selection was cancelled. Choose a regular folder to continue.')
-      } else {
-        setStorageError(
-          'This folder could not be used. Choose or create a regular folder; browsers may refuse Downloads or drive roots.',
-        )
-      }
+      if (error instanceof DOMException && error.name === 'AbortError') return
+      const pickerError = describeFolderPickerError(error)
+      setStorageError(pickerError.message)
+      showToast({
+        message: pickerError.message,
+        detail: pickerError.name,
+        variant: 'error',
+      })
     } finally {
       setStorageBusy(false)
     }
@@ -206,8 +240,18 @@ function AppRoutes() {
     try {
       const status = await storageProvider.reconnect()
       if (status === 'connected') {
-        await storageProvider.listLibrary()
         setStorageGate('app')
+        try {
+          await storageProvider.listLibrary()
+        } catch (error) {
+          showToast({
+            message:
+              error instanceof Error
+                ? error.message
+                : 'The library could not be scanned yet, but the folder is connected.',
+            variant: 'warning',
+          })
+        }
         showToast({ message: 'Library reconnected.', variant: 'success' })
       } else if (status === 'folder-missing') {
         setOnboardingMode('missing')
@@ -224,7 +268,7 @@ function AppRoutes() {
     }
   }
 
-  const chooseInAppStorage = async () => {
+  const chooseInAppStorage = () => {
     storageProvider.useInAppStorage()
     setStorageGate('app')
     showToast({ message: 'In-app storage is ready.', variant: 'success' })
@@ -244,8 +288,9 @@ function AppRoutes() {
               mode={onboardingMode}
               busy={storageBusy}
               error={storageError}
+              folderAccessReason={folderAccessReason}
               onChooseFolder={() => void connectFolder()}
-              onUseInAppStorage={() => void chooseInAppStorage()}
+              onUseInAppStorage={chooseInAppStorage}
             />
           )}
         </AnimatePresence>
@@ -290,8 +335,9 @@ function AppRoutes() {
         mode="missing"
         busy={storageBusy}
         error={storageError}
+        folderAccessReason={folderAccessReason}
         onChooseFolder={() => void connectFolder()}
-        onUseInAppStorage={() => void chooseInAppStorage()}
+        onUseInAppStorage={chooseInAppStorage}
       />
     )
   }

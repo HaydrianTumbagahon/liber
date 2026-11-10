@@ -6,6 +6,7 @@ import { defaultSettings } from '../theme.tsx'
 import type {
   EpubImportHandler,
   EpubImportRequest,
+  LibraryCopyResult,
   LibraryScanResult,
   StorageBackup,
   StorageProvider,
@@ -13,15 +14,21 @@ import type {
 } from './types.ts'
 import {
   calculateLibraryDiff,
+  compareNatural,
+  getFolderAccessAssessment,
+  parseBookFolderName,
+  parseVolumeNumber,
   resolveApplicationDirectory,
 } from './storageUtils.ts'
 
 export const APP_DIRECTORY_NAME = 'liber'
 const STORAGE_HANDLE_ID = 'app-root'
 const DOCUMENT_SCHEMA_VERSION = 1
+const EPUB_INDEX_PARSER_VERSION = 2
 const WRITE_DEBOUNCE_MS = 80
 
 type IndexedEpub = {
+  parserVersion: number
   size: number
   lastModified: number
   sha256: string | null
@@ -34,6 +41,8 @@ type IndexedEpub = {
   spineIndex: ParsedEpub['spineIndex']
   toc: ParsedEpub['toc']
   coverPath: string | null
+  folderCoverSize: number | null
+  folderCoverLastModified: number | null
 }
 
 type SettingsDocument = {
@@ -63,16 +72,11 @@ type PermissionDirectoryHandle = FileSystemDirectoryHandle & {
   requestPermission?: (descriptor: { mode: 'readwrite' }) => Promise<PermissionState>
 }
 
-type DirectoryPickerWindow = Window & {
-  showDirectoryPicker?: (options?: {
-    mode?: 'read' | 'readwrite'
-  }) => Promise<FileSystemDirectoryHandle>
-}
-
 type DirectoryEntry = {
   file: File
   relativePath: string
   bookFolderName: string
+  folderCover: File | null
 }
 
 type LockManagerLike = {
@@ -157,11 +161,45 @@ function migrateIndexDocument(value: unknown): LibraryIndexDocument {
   }
 }
 
-function naturalCompare(first: string, second: string) {
-  return first.localeCompare(second, undefined, {
-    numeric: true,
-    sensitivity: 'base',
-  })
+function isFolderCoverName(name: string) {
+  return /^(?:cover|folder)\.(?:jpe?g|png|webp)$/i.test(name)
+}
+
+async function hashBlob(blob: Blob) {
+  if (!globalThis.crypto?.subtle) return null
+  try {
+    const digest = await globalThis.crypto.subtle.digest(
+      'SHA-256',
+      await blob.arrayBuffer(),
+    )
+    return Array.from(new Uint8Array(digest), (byte) =>
+      byte.toString(16).padStart(2, '0'),
+    ).join('')
+  } catch (error) {
+    if (error instanceof Error) return null
+    return null
+  }
+}
+
+async function writeBlobStream(
+  handle: FileSystemFileHandle,
+  blob: Blob,
+) {
+  const writable = await handle.createWritable()
+  const reader = blob.stream().getReader()
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      await writable.write(value)
+    }
+    await writable.close()
+  } catch (error) {
+    await writable.abort()
+    throw error
+  } finally {
+    reader.releaseLock()
+  }
 }
 
 function safePath(path: string) {
@@ -229,7 +267,7 @@ export class FolderStorageProvider implements StorageProvider {
     try {
       const permission = handle.queryPermission
         ? await handle.queryPermission({ mode: 'readwrite' })
-        : 'granted'
+        : 'prompt'
       if (permission !== 'granted') {
         this.status = 'needs-permission'
         return
@@ -274,7 +312,7 @@ export class FolderStorageProvider implements StorageProvider {
       ? await selected.requestPermission({ mode: 'readwrite' })
       : selected.queryPermission
         ? await selected.queryPermission({ mode: 'readwrite' })
-        : 'granted'
+        : 'prompt'
     if (permission !== 'granted') {
       this.status = 'needs-permission'
       return this.status
@@ -329,7 +367,7 @@ export class FolderStorageProvider implements StorageProvider {
       ? await handle.requestPermission({ mode: 'readwrite' })
       : handle.queryPermission
         ? await handle.queryPermission({ mode: 'readwrite' })
-        : 'granted'
+        : 'prompt'
     if (permission !== 'granted') {
       this.status = 'needs-permission'
       return this.status
@@ -356,10 +394,7 @@ export class FolderStorageProvider implements StorageProvider {
   }
 
   private isSupported() {
-    return (
-      typeof window !== 'undefined' &&
-      typeof (window as DirectoryPickerWindow).showDirectoryPicker === 'function'
-    )
+    return getFolderAccessAssessment().supported
   }
 
   private async attachExistingDirectory(
@@ -750,15 +785,24 @@ export class FolderStorageProvider implements StorageProvider {
 
     for (const item of discovered) {
       const prior = previous[item.relativePath]
+      const folderCoverChanged =
+        (prior?.folderCoverSize ?? null) !== (item.folderCover?.size ?? null) ||
+        (prior?.folderCoverLastModified ?? null) !==
+          (item.folderCover?.lastModified ?? null)
       let indexed: IndexedEpub
       let parsed: ParsedEpub
       try {
         if (
           prior &&
+          prior.parserVersion === EPUB_INDEX_PARSER_VERSION &&
           prior.size === item.file.size &&
           prior.lastModified === item.file.lastModified
         ) {
-          indexed = prior
+          indexed = {
+            ...prior,
+            folderCoverSize: item.folderCover?.size ?? null,
+            folderCoverLastModified: item.folderCover?.lastModified ?? null,
+          }
           const cover = prior.coverPath
             ? await this.readCover(prior.coverPath)
             : null
@@ -772,6 +816,7 @@ export class FolderStorageProvider implements StorageProvider {
             size: item.file.size,
             lastModified: item.file.lastModified,
             sha256: parsed.hash,
+            parserVersion: EPUB_INDEX_PARSER_VERSION,
             bookFolderName: item.bookFolderName,
             title: parsed.title,
             author: parsed.author,
@@ -781,6 +826,8 @@ export class FolderStorageProvider implements StorageProvider {
             spineIndex: parsed.spineIndex,
             toc: parsed.toc,
             coverPath,
+            folderCoverSize: item.folderCover?.size ?? null,
+            folderCoverLastModified: item.folderCover?.lastModified ?? null,
           }
         }
 
@@ -792,8 +839,10 @@ export class FolderStorageProvider implements StorageProvider {
           !cachedVolume ||
           cachedVolume.fileMissing ||
           !prior ||
+          prior.parserVersion !== EPUB_INDEX_PARSER_VERSION ||
           prior.size !== item.file.size ||
-          prior.lastModified !== item.file.lastModified
+          prior.lastModified !== item.file.lastModified ||
+          folderCoverChanged
         ) {
           if (this.importEpub) {
             const request: EpubImportRequest = {
@@ -802,6 +851,8 @@ export class FolderStorageProvider implements StorageProvider {
               sourceDirectoryId: STORAGE_HANDLE_ID,
               sourceRelativePath: item.relativePath,
               bookFolderName: item.bookFolderName,
+              volumeNumber: parseVolumeNumber(item.file.name),
+              bookCover: item.folderCover,
             }
             await this.importEpub(request)
           }
@@ -846,13 +897,22 @@ export class FolderStorageProvider implements StorageProvider {
     const found: DirectoryEntry[] = []
     for await (const [name, handle] of this.libraryDirectory!.entries()) {
       if (handle.kind === 'directory') {
+        const epubHandles: Array<{ name: string; handle: FileSystemFileHandle }> = []
+        let folderCover: File | null = null
         for await (const [fileName, child] of handle.entries()) {
-          if (child.kind !== 'file' || !fileName.toLowerCase().endsWith('.epub'))
-            continue
+          if (child.kind !== 'file') continue
+          if (fileName.toLowerCase().endsWith('.epub')) {
+            epubHandles.push({ name: fileName, handle: child })
+          } else if (!folderCover && isFolderCoverName(fileName)) {
+            folderCover = await child.getFile()
+          }
+        }
+        for (const epub of epubHandles) {
           found.push({
-            file: await child.getFile(),
-            relativePath: `${name}/${fileName}`,
+            file: await epub.handle.getFile(),
+            relativePath: `${name}/${epub.name}`,
             bookFolderName: name,
+            folderCover,
           })
         }
       } else if (handle.kind === 'file' && name.toLowerCase().endsWith('.epub')) {
@@ -860,12 +920,23 @@ export class FolderStorageProvider implements StorageProvider {
           file: await handle.getFile(),
           relativePath: name,
           bookFolderName: name.replace(/\.epub$/i, ''),
+          folderCover: null,
         })
       }
     }
-    return found.sort((first, second) =>
-      naturalCompare(first.relativePath, second.relativePath),
-    )
+    return found.sort((first, second) => {
+      const firstVolume = parseVolumeNumber(first.file.name)
+      const secondVolume = parseVolumeNumber(second.file.name)
+      if (
+        first.bookFolderName === second.bookFolderName &&
+        firstVolume !== null &&
+        secondVolume !== null &&
+        firstVolume !== secondVolume
+      ) {
+        return firstVolume - secondVolume
+      }
+      return compareNatural(first.relativePath, second.relativePath)
+    })
   }
 
   private async markRemovedFiles(paths: readonly string[]) {
@@ -895,6 +966,28 @@ export class FolderStorageProvider implements StorageProvider {
       if (missingEntry(error)) return null
       throw error
     }
+  }
+
+  private async findIndexedDuplicatePath(
+    hash: string,
+    entries: Readonly<Record<string, IndexedEpub>>,
+  ) {
+    for (const [path, indexed] of Object.entries(entries)) {
+      if (indexed.sha256 !== hash) continue
+      try {
+        const existing = await this.readBookFile(path)
+        if (
+          existing.size === indexed.size &&
+          existing.lastModified === indexed.lastModified
+        ) {
+          return path
+        }
+        if ((await hashBlob(existing)) === hash) return path
+      } catch (error) {
+        if (!missingEntry(error)) throw error
+      }
+    }
+    return null
   }
 
   private async storeCover(hash: string | null, relativePath: string, cover: Blob) {
@@ -929,10 +1022,46 @@ export class FolderStorageProvider implements StorageProvider {
     return handle.getFile()
   }
 
-  async copyIntoLibrary(files: readonly File[], bookFolderName: string) {
+  async copyIntoLibrary(
+    files: readonly File[],
+    bookFolderName: string,
+    options: {
+      folderCover?: File | null
+      volumeNumbers?: readonly (number | null)[]
+      parsedEpubs?: readonly ParsedEpub[]
+    } = {},
+  ): Promise<LibraryCopyResult[]> {
     this.assertConnected()
     if (!this.importEpub) throw new Error('The EPUB importer is unavailable.')
-    const safeFolder = bookFolderName.trim()
+    const requestedFolderName = bookFolderName.trim()
+    const cleanedTitle = parseBookFolderName(requestedFolderName).title
+    const normalizedTitle = cleanedTitle.normalize('NFKC').trim().toLocaleLowerCase()
+    const matchingBook = await db.books
+      .filter(
+        (book) =>
+          parseBookFolderName(book.title).title
+            .normalize('NFKC')
+            .trim()
+            .toLocaleLowerCase() === normalizedTitle,
+      )
+      .first()
+    const matchingVolumes = matchingBook
+      ? await db.volumes.where('bookId').equals(matchingBook.id).toArray()
+      : []
+    const existingBookFolder = matchingVolumes
+      .map((volume) => volume.sourceRelativePath)
+      .find(
+        (path) =>
+          path &&
+          path.includes('/') &&
+          matchingVolumes.some(
+            (volume) =>
+              volume.sourceRelativePath === path &&
+              volume.sourceDirectoryId === STORAGE_HANDLE_ID,
+          ),
+      )
+      ?.split('/')[0]
+    const safeFolder = existingBookFolder ?? requestedFolderName
     if (!safeFolder || safeFolder === '.' || safeFolder === '..' || safeFolder.includes('/')) {
       throw new Error('Choose a valid book folder name.')
     }
@@ -944,28 +1073,146 @@ export class FolderStorageProvider implements StorageProvider {
       throw new Error('The selected files contain duplicate names.')
     }
 
-    const folder = await this.libraryDirectory!.getDirectoryHandle(safeFolder, {
-      create: true,
-    })
-    for (const file of files) {
+    const folderCover = options.folderCover
+    let targetFolder: FileSystemDirectoryHandle | null = null
+    const ensureTargetFolder = async () => {
+      targetFolder ??= await this.libraryDirectory!.getDirectoryHandle(safeFolder, {
+        create: true,
+      })
+      return targetFolder
+    }
+    const copyFolderCover = async (folder: FileSystemDirectoryHandle) => {
+      if (!folderCover || !isFolderCoverName(folderCover.name)) return
       try {
-        await folder.getFileHandle(file.name, { create: false })
-        throw new Error(`A file named ${file.name} already exists in this book folder.`)
+        await folder.getFileHandle(folderCover.name, { create: false })
       } catch (error) {
         if (!missingEntry(error)) throw error
+        const coverHandle = await folder.getFileHandle(folderCover.name, {
+          create: true,
+        })
+        await writeBlobStream(coverHandle, folderCover)
       }
     }
+    const index = await this.readIndex()
+    const results: LibraryCopyResult[] = []
+    let indexedDuplicateFound = false
+    for (const [fileIndex, file] of files.entries()) {
+      const parsed = options.parsedEpubs?.[fileIndex] ?? (await parseEpubFile(file))
+      const duplicateIndexPath = parsed.hash
+        ? await this.findIndexedDuplicatePath(parsed.hash, index.entries)
+        : null
+      const duplicateVolumeCandidate = parsed.hash
+        ? await db.volumes.where('sourceFileHash').equals(parsed.hash).first()
+        : undefined
+      let duplicateVolume =
+        duplicateVolumeCandidate && !duplicateVolumeCandidate.fileMissing
+          ? duplicateVolumeCandidate
+          : undefined
+      if (
+        duplicateVolume?.sourceDirectoryId === STORAGE_HANDLE_ID &&
+        duplicateVolume.sourceRelativePath
+      ) {
+        try {
+          await this.readBookFile(duplicateVolume.sourceRelativePath)
+        } catch (error) {
+          if (!missingEntry(error)) throw error
+          duplicateVolume = undefined
+        }
+      }
+      const duplicatePath =
+        duplicateIndexPath ?? duplicateVolume?.sourceRelativePath
+      if (duplicatePath) {
+        indexedDuplicateFound ||= duplicateIndexPath !== null
+        if (duplicatePath.startsWith(`${safeFolder}/`)) {
+          const folder = await ensureTargetFolder()
+          await copyFolderCover(folder)
+        }
+        results.push({ path: duplicatePath, skipped: true })
+        continue
+      }
 
-    const copiedPaths: string[] = []
-    for (const file of files) {
-      const handle = await folder.getFileHandle(file.name, { create: true })
-      const writable = await handle.createWritable()
-      await writable.write(file)
-      await writable.close()
-      copiedPaths.push(`${safeFolder}/${file.name}`)
+      const folder = await ensureTargetFolder()
+      await copyFolderCover(folder)
+      const extensionIndex = file.name.lastIndexOf('.')
+      const baseName = extensionIndex > 0 ? file.name.slice(0, extensionIndex) : file.name
+      const extension = extensionIndex > 0 ? file.name.slice(extensionIndex) : ''
+      let targetName = file.name
+      let targetHandle: FileSystemFileHandle | null = null
+      let existingTargetWasDuplicate = false
+      for (let suffix = 1; suffix <= 1000; suffix += 1) {
+        targetName = suffix === 1 ? file.name : `${baseName} - ${suffix}${extension}`
+        try {
+          const existingHandle = await folder.getFileHandle(targetName, {
+            create: false,
+          })
+          const existingFile = await existingHandle.getFile()
+          const existingHash = await hashBlob(existingFile)
+          if (parsed.hash && existingHash === parsed.hash) {
+            results.push({
+              path: `${safeFolder}/${targetName}`,
+              skipped: true,
+              outcome: 'already-present',
+            })
+            existingTargetWasDuplicate = true
+            targetHandle = null
+            break
+          }
+        } catch (error) {
+          if (!missingEntry(error)) throw error
+          targetHandle = await folder.getFileHandle(targetName, { create: true })
+          break
+        }
+      }
+      if (existingTargetWasDuplicate) continue
+      if (!targetHandle) {
+        throw new Error(`Could not find a free filename for ${file.name}.`)
+      }
+
+      const relativePath = `${safeFolder}/${targetName}`
+      await writeBlobStream(targetHandle, file)
+      const coverPath = parsed.cover
+        ? await this.storeCover(parsed.hash, relativePath, parsed.cover)
+        : null
+      const volumeNumber =
+        options.volumeNumbers?.[fileIndex] ?? parseVolumeNumber(file.name) ?? parsed.volumeNumber
+      const imported = await this.importEpub({
+        file,
+        epub: parsed,
+        sourceDirectoryId: STORAGE_HANDLE_ID,
+        sourceRelativePath: relativePath,
+        bookFolderName: requestedFolderName,
+        volumeNumber,
+        bookCover: folderCover,
+      })
+      index.entries[relativePath] = {
+        parserVersion: EPUB_INDEX_PARSER_VERSION,
+        size: file.size,
+        lastModified: file.lastModified,
+        sha256: parsed.hash,
+        bookFolderName: safeFolder,
+        title: parsed.title,
+        author: parsed.author,
+        seriesName: parsed.seriesName,
+        volumeNumber,
+        volumeTitle: parsed.volumeTitle,
+        spineIndex: parsed.spineIndex,
+        toc: parsed.toc,
+        coverPath,
+        folderCoverSize: folderCover?.size ?? null,
+        folderCoverLastModified: folderCover?.lastModified ?? null,
+      }
+      results.push({
+        path: relativePath,
+        skipped: imported.outcome === 'already-present',
+        outcome: imported.outcome,
+      })
     }
-    await this.listLibrary()
-    return copiedPaths
+    await this.scheduleJsonWrite('library-index.json', {
+      schemaVersion: DOCUMENT_SCHEMA_VERSION,
+      entries: index.entries,
+    })
+    if (targetFolder || indexedDuplicateFound) await this.listLibrary()
+    return results
   }
 
   async deleteLibraryFiles(

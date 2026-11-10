@@ -14,6 +14,13 @@ export type LibrarySort =
   | 'completed'
   | 'title'
   | 'author'
+export type BookSortMode = 'name' | 'date-added'
+export type SortDirection = 'asc' | 'desc'
+export type BookDisplaySettings = {
+  sort: BookSortMode
+  direction: SortDirection
+  layout: LibraryLayout
+}
 export type VoicePreference = string
 
 export type AppSettings = {
@@ -23,10 +30,12 @@ export type AppSettings = {
   preferredVoice: VoicePreference
   libraryLayout: LibraryLayout
   librarySort: LibrarySort
+  librarySortDirection: SortDirection
   readerFontSize: number
   readerLineHeight: number
   readerMargins: number
   autoHideTopBar: boolean
+  bookDisplayPreferences: Record<string, BookDisplaySettings>
 }
 
 export const defaultSettings: AppSettings = {
@@ -36,10 +45,12 @@ export const defaultSettings: AppSettings = {
   preferredVoice: '',
   libraryLayout: 'grid',
   librarySort: 'date-added',
+  librarySortDirection: 'asc',
   readerFontSize: 1.125,
   readerLineHeight: 1.9,
   readerMargins: 1.5,
   autoHideTopBar: true,
+  bookDisplayPreferences: {},
 }
 
 type SettingsContextValue = {
@@ -51,9 +62,11 @@ const SettingsContext = createContext<SettingsContextValue | null>(null)
 let settingsInitialization: Promise<void> | null = null
 
 function initializeSettings() {
+  if (!storageProvider.isReady()) return Promise.resolve()
   if (!settingsInitialization) {
     settingsInitialization = (async () => {
       await storageProvider.init()
+      if (!storageProvider.isReady()) return
       const current = await db.settings.get('app')
       if (!current) {
         let initialSettings = defaultSettings
@@ -78,7 +91,10 @@ function initializeSettings() {
       } catch {
         // The database remains the settings source when localStorage is unavailable.
       }
-    })()
+    })().catch((error: unknown) => {
+      settingsInitialization = null
+      throw error
+    })
   }
 
   return settingsInitialization
@@ -89,7 +105,13 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   const settings = record?.value ?? defaultSettings
 
   useEffect(() => {
-    void initializeSettings().catch(() => undefined)
+    const initializeWhenReady = () => {
+      void initializeSettings().catch(() => undefined)
+    }
+    initializeWhenReady()
+    window.addEventListener('liber-storage-change', initializeWhenReady)
+    return () =>
+      window.removeEventListener('liber-storage-change', initializeWhenReady)
   }, [])
 
   const updateSettings = async (updates: Partial<AppSettings>) => {

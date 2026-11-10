@@ -3,8 +3,13 @@ import type { KeyboardEvent } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 import {
   ArrowLeft,
+  ArrowRight,
+  BookOpen,
   Check,
+  LayoutGrid,
+  List,
   RefreshCw,
+  ScrollText,
   Trash2,
   Upload,
   Download,
@@ -13,6 +18,7 @@ import {
 import { useNavigate } from 'react-router-dom'
 import { Button } from '../../components/ui/Button.tsx'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog.tsx'
+import { IconToggle } from '../../components/ui/IconToggle.tsx'
 import { Select } from '../../components/ui/Select.tsx'
 import { Slider } from '../../components/ui/Slider.tsx'
 import { SegmentedControl } from '../../components/ui/SegmentedControl.tsx'
@@ -31,6 +37,7 @@ import {
 import { defaultSettings } from '../../lib/theme.tsx'
 import { useLenisLock } from '../../lib/LenisProvider.tsx'
 import {
+  describeFolderPickerError,
   showLibraryDirectoryPicker,
   storageProvider,
 } from '../../lib/storage/index.ts'
@@ -43,17 +50,51 @@ const themeOptions = [
 ] as const
 
 const readingOptions = [
-  { label: 'Continuous vertical', value: 'continuous' },
-  { label: 'Paginated LTR', value: 'paginated-ltr' },
-  { label: 'Paginated RTL', value: 'paginated-rtl' },
+  {
+    label: 'Continuous vertical',
+    value: 'continuous',
+    icon: <ScrollText size={20} aria-hidden="true" />,
+  },
+  {
+    label: 'Paginated LTR',
+    value: 'paginated-ltr',
+    icon: (
+      <span
+        aria-hidden="true"
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}
+      >
+        <BookOpen size={16} />
+        <ArrowRight size={14} />
+      </span>
+    ),
+  },
+  {
+    label: 'Paginated RTL',
+    value: 'paginated-rtl',
+    icon: (
+      <span
+        aria-hidden="true"
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}
+      >
+        <BookOpen size={16} />
+        <ArrowLeft size={14} />
+      </span>
+    ),
+  },
 ] as const
 
 const layoutOptions = [
-  { label: 'Grid', value: 'grid' },
-  { label: 'List', value: 'list' },
+  {
+    label: 'Grid',
+    value: 'grid',
+    icon: <LayoutGrid size={20} aria-hidden="true" />,
+  },
+  {
+    label: 'List',
+    value: 'list',
+    icon: <List size={20} aria-hidden="true" />,
+  },
 ] as const
-
-const appVersion = '0.0.0'
 
 function SettingsSection({
   title,
@@ -264,15 +305,13 @@ export function SettingsPage() {
         variant: 'success',
       })
     } catch (error) {
-      if (!(error instanceof DOMException && error.name === 'AbortError')) {
-        showToast({
-          message:
-            error instanceof Error
-              ? error.message
-              : 'This folder could not be used. Choose a regular folder.',
-          variant: 'error',
-        })
-      }
+      if (error instanceof DOMException && error.name === 'AbortError') return
+      const pickerError = describeFolderPickerError(error)
+      showToast({
+        message: pickerError.message,
+        detail: pickerError.name,
+        variant: 'error',
+      })
     } finally {
       setFolderBusy(false)
       refreshFolderStatus()
@@ -460,7 +499,7 @@ export function SettingsPage() {
         <SettingsSection title="Reading">
           <div className="settings-row">
             <h3>Mode</h3>
-            <SegmentedControl<ReadingMode>
+            <IconToggle<ReadingMode>
               label="Reading mode"
               value={settings.readingMode}
               options={readingOptions}
@@ -538,7 +577,7 @@ export function SettingsPage() {
         <SettingsSection title="Library">
           <div className="settings-row">
             <h3>Default layout</h3>
-            <SegmentedControl<LibraryLayout>
+            <IconToggle<LibraryLayout>
               label="Default library layout"
               value={settings.libraryLayout}
               options={layoutOptions}
@@ -670,19 +709,6 @@ export function SettingsPage() {
               {statusMessage}
             </p>
           )}
-        </SettingsSection>
-
-        <SettingsSection title="About">
-          <dl className="settings-about">
-            <div>
-              <dt>Version</dt>
-              <dd>{appVersion}</dd>
-            </div>
-            <div>
-              <dt>Credits</dt>
-              <dd>Built with React, Vite, Tailwind CSS, Dexie, and Lucide.</dd>
-            </div>
-          </dl>
         </SettingsSection>
 
         {import.meta.env.DEV && (

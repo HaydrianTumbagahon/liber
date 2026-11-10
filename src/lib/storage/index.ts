@@ -1,3 +1,4 @@
+import { db } from '../../data/database.ts'
 import { FallbackStorageProvider } from './fallbackStorageProvider.ts'
 import { FolderStorageProvider } from './folderStorageProvider.ts'
 import type {
@@ -5,18 +6,28 @@ import type {
   StorageProvider,
   StorageStatus,
 } from './types.ts'
+import {
+  getFolderAccessAssessment,
+  getFolderAccessChecks,
+  logFolderAccessChecks,
+} from './storageUtils.ts'
 
 export type {
   EpubImportHandler,
   EpubImportRequest,
   EpubImportResult,
   LibraryDiff,
+  LibraryCopyResult,
   LibraryScanResult,
   StorageBackup,
   StorageProvider,
   StorageStatus,
 } from './types.ts'
-export { calculateLibraryDiff, resolveApplicationDirectory } from './storageUtils.ts'
+export {
+  assessFolderAccess,
+  calculateLibraryDiff,
+  resolveApplicationDirectory,
+} from './storageUtils.ts'
 export { APP_DIRECTORY_NAME } from './folderStorageProvider.ts'
 
 class ActiveStorageProvider implements StorageProvider {
@@ -34,12 +45,6 @@ class ActiveStorageProvider implements StorageProvider {
   async init() {
     if (!this.initialization) {
       this.initialization = (async () => {
-        try {
-          this.fallbackSelected =
-            window.localStorage.getItem('liber-storage-mode') === 'fallback'
-        } catch {
-          this.fallbackSelected = false
-        }
         await this.folder.init()
         await this.fallback.init()
       })().catch((error: unknown) => {
@@ -71,13 +76,12 @@ class ActiveStorageProvider implements StorageProvider {
     return this.fallbackSelected
   }
 
+  isReady() {
+    return this.folder.isConnected() || this.fallbackSelected
+  }
+
   useInAppStorage() {
     this.fallbackSelected = true
-    try {
-      window.localStorage.setItem('liber-storage-mode', 'fallback')
-    } catch {
-      // The current selection remains active for this app session.
-    }
     this.notifyStorageChange()
   }
 
@@ -91,11 +95,6 @@ class ActiveStorageProvider implements StorageProvider {
 
   private useFolderStorage() {
     this.fallbackSelected = false
-    try {
-      window.localStorage.removeItem('liber-storage-mode')
-    } catch {
-      // The current selection remains active for this app session.
-    }
   }
 
   async connect(dirHandle: FileSystemDirectoryHandle) {
@@ -107,9 +106,9 @@ class ActiveStorageProvider implements StorageProvider {
   }
 
   private active(): StorageProvider {
-    return this.folder.isConnected() && !this.fallbackSelected
-      ? this.folder
-      : this.fallback
+    if (this.folder.isConnected() && !this.fallbackSelected) return this.folder
+    if (this.fallbackSelected) return this.fallback
+    throw new Error('Choose a library folder or explicitly select in-app storage first.')
   }
 
   async readSettings() {
@@ -150,9 +149,13 @@ class ActiveStorageProvider implements StorageProvider {
     return this.active().readBookFile(path)
   }
 
-  async copyIntoLibrary(files: readonly File[], bookFolderName: string) {
+  async copyIntoLibrary(
+    files: readonly File[],
+    bookFolderName: string,
+    options?: Parameters<StorageProvider['copyIntoLibrary']>[2],
+  ) {
     await this.init()
-    return this.active().copyIntoLibrary(files, bookFolderName)
+    return this.active().copyIntoLibrary(files, bookFolderName, options)
   }
 
   async deleteLibraryFiles(
@@ -183,7 +186,110 @@ export function registerEpubImportHandler(handler: EpubImportHandler) {
   storageProvider.setImporter(handler)
 }
 
+export function getFolderAccessSupport() {
+  return getFolderAccessAssessment()
+}
+
+export function logFolderAccessSupport() {
+  return logFolderAccessChecks()
+}
+
+export function describeFolderPickerError(error: unknown) {
+  const name = error instanceof Error ? error.name : 'UnknownError'
+  switch (name) {
+    case 'SecurityError':
+      return {
+        name,
+        message:
+          'The browser blocked folder access in this page. Open the site directly over HTTPS and retry.',
+      }
+    case 'NotAllowedError':
+      return {
+        name,
+        message:
+          'Folder access was denied. Allow access in your browser settings, then retry.',
+      }
+    case 'TypeError':
+      return {
+        name,
+        message:
+          'The folder picker is unavailable in this browser context. Open this site directly in a supported browser and retry.',
+      }
+    default:
+      return {
+        name,
+        message: 'Could not open the folder picker. Retry or use in-app storage.',
+      }
+  }
+}
+
+function browserName(userAgent: string) {
+  if (/Edg\//.test(userAgent)) return 'Edge'
+  if (/Firefox\//.test(userAgent)) return 'Firefox'
+  if (/Chrome\//.test(userAgent)) return 'Chrome'
+  if (/Safari\//.test(userAgent)) return 'Safari'
+  return 'Unknown'
+}
+
+export async function logStorageDiagnostics() {
+  await storageProvider.init()
+  const support = getFolderAccessChecks()
+  const persisted = await db.directories.get('app-root')
+  const handle = persisted?.handle
+  let permissionState = 'no persisted handle'
+  if (handle) {
+    const permissionHandle = handle as FileSystemDirectoryHandle & {
+      queryPermission?: (descriptor: { mode: 'readwrite' }) => Promise<PermissionState>
+    }
+    if (permissionHandle.queryPermission) {
+      try {
+        permissionState = await permissionHandle.queryPermission({ mode: 'readwrite' })
+      } catch (error) {
+        permissionState = error instanceof Error ? `error: ${error.name}` : 'error'
+      }
+    } else {
+      permissionState = 'queryPermission unavailable'
+    }
+  }
+  const providerInUse = storageProvider.isConnected()
+    ? 'folder'
+    : storageProvider.isUsingFallback()
+      ? 'in-app (explicit session choice)'
+      : 'not selected'
+
+  console.info('[liber:diagnostics]', {
+    browser: browserName(navigator.userAgent),
+    supportsShowDirectoryPicker:
+      support.pickerPropertyPresent && support.pickerCallable,
+    storageProvider: providerInUse,
+    permissionState,
+    persistedHandlePresent: Boolean(handle),
+  })
+}
+
+declare global {
+  interface Window {
+    __liberDiagnostics?: () => Promise<void>
+  }
+}
+
+export function installStorageDiagnostics() {
+  window.__liberDiagnostics = logStorageDiagnostics
+  return () => {
+    delete window.__liberDiagnostics
+  }
+}
+
+function requireFolderAccess() {
+  const support = getFolderAccessAssessment()
+  if (!support.supported) {
+    throw new TypeError(`Folder access is not available: ${support.reason}.`)
+  }
+  return support
+}
+
 export function showLibraryDirectoryPicker() {
+  requireFolderAccess()
   const picker = (
     window as Window & {
       showDirectoryPicker?: (options?: {
@@ -196,4 +302,18 @@ export function showLibraryDirectoryPicker() {
     throw new Error('Folder storage is not supported in this browser.')
   }
   return picker.call(window, { mode: 'readwrite', startIn: 'documents' })
+}
+
+export function showImportDirectoryPicker() {
+  requireFolderAccess()
+  const picker = (
+    window as Window & {
+      showDirectoryPicker?: (options?: {
+        mode?: 'read' | 'readwrite'
+        startIn?: 'documents'
+      }) => Promise<FileSystemDirectoryHandle>
+    }
+  ).showDirectoryPicker
+  if (!picker) throw new TypeError('Folder picker is not available.')
+  return picker.call(window, { mode: 'read', startIn: 'documents' })
 }

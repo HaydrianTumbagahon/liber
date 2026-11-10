@@ -1,15 +1,48 @@
 import type { RefObject } from 'react'
-import { ArrowLeft } from 'lucide-react'
+import {
+  ArrowLeft,
+  ArrowRight,
+  BookOpen,
+  ScrollText,
+} from 'lucide-react'
 import { Button } from '../../components/ui/Button.tsx'
-import { SegmentedControl } from '../../components/ui/SegmentedControl.tsx'
+import { IconToggle } from '../../components/ui/IconToggle.tsx'
 import type { ReadingMode } from '../../lib/theme.tsx'
 
 export type ReaderMode = ReadingMode
 
 const modeOptions = [
-  { label: 'Scroll', value: 'continuous' },
-  { label: 'LTR', value: 'paginated-ltr' },
-  { label: 'RTL', value: 'paginated-rtl' },
+  {
+    label: 'Continuous vertical',
+    value: 'continuous',
+    icon: <ScrollText size={20} aria-hidden="true" />,
+  },
+  {
+    label: 'Paginated LTR',
+    value: 'paginated-ltr',
+    icon: (
+      <span
+        aria-hidden="true"
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}
+      >
+        <BookOpen size={16} />
+        <ArrowRight size={14} />
+      </span>
+    ),
+  },
+  {
+    label: 'Paginated RTL',
+    value: 'paginated-rtl',
+    icon: (
+      <span
+        aria-hidden="true"
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}
+      >
+        <BookOpen size={16} />
+        <ArrowLeft size={14} />
+      </span>
+    ),
+  },
 ] as const
 
 type ReaderTopBarProps = {
@@ -47,7 +80,7 @@ export function ReaderTopBar({
           <span className="reader-topbar__book">{bookTitle}</span>
           <span className="reader-topbar__volume">{volumeTitle}</span>
         </div>
-        <SegmentedControl<ReaderMode>
+        <IconToggle<ReaderMode>
           label="Reading mode"
           value={mode}
           options={modeOptions}

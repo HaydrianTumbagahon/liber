@@ -2,9 +2,12 @@
 
 ## How to work
 
-- When my message starts with "PHASE N:" or "PHASE R#:" (R0 to R6), implement it directly and completely with your tools: create, edit, and delete files and run commands as needed. Do not re-summarize the phase, do not write a plan for me to approve, and do not ask me for files. If something is ambiguous, state one assumption in a line and proceed.
-- Before any task: read docs/BUILD_STATE.md and docs/PROJECT_SPEC.md, then open every file you will touch.
-- After any task: run `npx tsc --noEmit`, lint, and `npm run build`; fix every error you introduced; then update docs/BUILD_STATE.md (phase status, new/changed files, changed hook or component APIs, known issues).
+- When my message starts with "PHASE N:", "PHASE R#:" (R0 to R6), or "PHASE S#:" (S0 to S5), execute it directly and completely with your tools, exactly the same way for all three phase families. Do not re-summarize the phase, do not write a plan for me to approve, and do not ask me for files. If something is ambiguous, state one assumption in a line and proceed.
+- Before a task: read docs/BUILD_STATE.md and only the files the task names or clearly needs. Do NOT re-read the whole repo, do not re-audit finished work, and do not re-read files you already read in this chat.
+- After a task: run only `npx tsc --noEmit`. Run lint and `npm run build` only when the phase says so or when I ask. Fix only errors you introduced.
+- Update docs/BUILD_STATE.md with at most 5 short lines (phase done, files changed, any API change). Do not rewrite the whole file.
+- Stay inside the phase: no refactors, no renames, no style cleanups, no extra features, no extra audits.
+- If a phase seems too big, do the first half, report what remains in one line, and wait for me.
 - Do not run git commits or push unless I ask. Do not implement anything outside the requested phase.
 - This project's design system overrides any generic design preferences or "variety" rules from the WebDev agent. All other agent rules still apply.
 
@@ -34,6 +37,10 @@ React + Vite + TypeScript, Tailwind CSS, Lenis for page scrolling, Framer Motion
 - IndexedDB only caches the directory handle, parsed metadata, and hash data; it is not the canonical store. Unsupported browsers, including iOS, Safari, and Firefox, use in-app IndexedDB/OPFS storage and must provide Export/Import of the data files.
 - Each direct subfolder in `library/` is one book/series; its folder name is the display title. EPUBs inside are volumes ordered by natural filename sort. Author and cover come from EPUB metadata. A loose EPUB directly in `library/` is a single-volume book.
 - Progress is keyed by stable identity that survives file deletion and re-adding: SHA-256 content hash per EPUB, fallback = normalized title + author + volume number. Write progress to `data/progress.json`; retain it when a source file is missing and remove it only when the user deletes the book.
+- A book folder is one book. Its title is the folder name with all trailing `[]`, `()`, `【】`, or `{}` source-tag groups removed; store the tag text in `sourceTags` and show it as muted metadata on Book Detail, never as part of the title. A folder whose cleaned title matches an existing book merges into that book.
+- Add light novels is a hybrid importer for folder drops/selections and individual EPUB files, with drag-and-drop for both and separate Choose folder / Choose files actions. A dropped folder with no EPUB directly inside but EPUB-bearing subfolders imports each such subfolder as its own book.
+- Volume order uses natural filename sort. Parse volume numbers from `Vol. 3`, `v03`, `Volume 3`, or `#3`; use natural order when no number is found. Skip same-identity EPUB content hashes. Folder cover priority is `cover.jpg/png/webp` or `folder.jpg/png/webp`, then volume covers from lowest numbered onward, then a generated flat cover; extract/cache each volume cover too.
+- Book Detail includes Name (ascending by default) and Date Added sorting, an ascending/descending icon toggle, a grid/list `IconToggle` for volumes, per-book resync, an Edit menu, and Add volumes. Library sorting also has an ascending/descending icon toggle.
 - EPUB parsing runs in a Web Worker if it blocks the UI. Chapter HTML is sanitized, publisher styles stripped, app typography applied.
 - TTS reads sentence-sized chunks, updates saved progress as it advances, uses Media Session and Wake Lock. Web Speech often pauses when the screen locks (especially iOS Safari): show an in-app notice where unsupported.
 
@@ -44,6 +51,7 @@ React + Vite + TypeScript, Tailwind CSS, Lenis for page scrolling, Framer Motion
 - Notifications appear bottom-right on desktop and at the top of the screen on mobile. The only desktop top-of-screen exception is the resync status banner.
 - Popups and modals are always centered with a blurred backdrop; close via the X or clicking outside. Do not add a separate Close button.
 - Light/Dark/System theme behavior is complete and locked; do not change it.
+- Reading-mode controls and Library default-layout controls are icon-only everywhere, including Reader and Settings, using custom tooltips and accessible aria-labels. Settings has no About section, app version, or credits.
 - The top-of-screen install button is the only install entry point. Never show a bottom "install library for offline reading" prompt.
 
 ## Coding rules
@@ -52,7 +60,7 @@ TypeScript, small focused components, one folder per feature (src/features/{libr
 
 ## Future additions
 
-Follow the R roadmap in docs/PROJECT_SPEC.md: R1 motion system, R2 custom UI primitives, and R3 library fixes are complete; next are R4 Add Books modal, R5 folder storage engine, and R6 onboarding/scan/restore. R5 and R6 supersede Phase 10's storage and resync/reconciliation work. Any new feature must use existing tokens, shared components, and hooks; follow the unslop rules; respect the architecture decisions; and ship with a "Done when" checklist. If a request conflicts with a locked decision, tell me the conflict and propose options before coding.
+R0-R6 are complete. Follow the S roadmap in docs/PROJECT_SPEC.md: S0 docs/instructions (complete), S1 deployed folder selection, S2 Add light novels hybrid import, S3 Book Detail tools, S4 icon controls and Settings cleanup, S5 final audit and deploy check. Any new feature must use existing tokens, shared components, and hooks; follow the unslop rules; respect the architecture decisions; and ship with a "Done when" checklist. If a request conflicts with a locked decision, tell me the conflict and propose options before coding.
 
 *** Add File: C:\Users\htums\Documents\Workspace\liber\docs\PROJECT_SPEC.md
 

@@ -21,6 +21,7 @@ const toastIcons = {
 
 export function ToastItem({
   message,
+  detail,
   variant = 'info',
   action,
   duration = 4000,
@@ -98,7 +99,10 @@ export function ToastItem({
       onClick={onDismiss}
     >
       <Icon size={17} aria-hidden="true" />
-      <span className="ui-toast__message">{message}</span>
+      <span className="ui-toast__copy">
+        <span className="ui-toast__message">{message}</span>
+        {detail && <small className="ui-toast__detail">{detail}</small>}
+      </span>
       {action && (
         <Button
           type="button"

@@ -10,6 +10,7 @@ type OnboardingPageProps = {
   mode: OnboardingMode
   busy: boolean
   error: string
+  folderAccessReason?: string
   onChooseFolder: () => void
   onUseInAppStorage: () => void
 }
@@ -38,6 +39,7 @@ export function OnboardingPage({
   mode,
   busy,
   error,
+  folderAccessReason = '',
   onChooseFolder,
   onUseInAppStorage,
 }: OnboardingPageProps) {
@@ -109,6 +111,11 @@ export function OnboardingPage({
         {error && (
           <p className="storage-onboarding__error" role="alert">
             {error}
+          </p>
+        )}
+        {unsupported && (
+          <p className="storage-onboarding__hint">
+            Folder access: not supported ({folderAccessReason})
           </p>
         )}
       </section>

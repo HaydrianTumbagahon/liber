@@ -33,18 +33,26 @@ export type EpubImportRequest = {
   sourceDirectoryId?: string
   sourceRelativePath?: string
   bookFolderName?: string
+  volumeNumber?: number | null
+  bookCover?: Blob | null
 }
 
 export type EpubImportResult = {
   bookId: string
   title: string
   volumeNumber: number
-  outcome: 'added' | 'relinked' | 'already-present'
+  outcome: 'added' | 'merged' | 'relinked' | 'already-present'
 }
 
 export type EpubImportHandler = (
   request: EpubImportRequest,
 ) => Promise<EpubImportResult>
+
+export type LibraryCopyResult = {
+  path: string
+  skipped: boolean
+  outcome?: EpubImportResult['outcome']
+}
 
 export type StorageBackup = {
   schemaVersion: 1
@@ -73,7 +81,12 @@ export interface StorageProvider {
   copyIntoLibrary(
     files: readonly File[],
     bookFolderName: string,
-  ): Promise<string[]>
+    options?: {
+      folderCover?: File | null
+      volumeNumbers?: readonly (number | null)[]
+      parsedEpubs?: readonly ParsedEpub[]
+    },
+  ): Promise<LibraryCopyResult[]>
   deleteLibraryFiles(
     paths: readonly string[],
     options: { confirmed: true },

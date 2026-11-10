@@ -19,17 +19,11 @@ import { IconToggle } from '../../components/ui/IconToggle.tsx'
 import { Modal } from '../../components/ui/Modal.tsx'
 import { ProgressBar } from '../../components/ui/ProgressBar.tsx'
 import { Select } from '../../components/ui/Select.tsx'
-import { SegmentedControl } from '../../components/ui/SegmentedControl.tsx'
 import { Skeleton } from '../../components/ui/Skeleton.tsx'
 import { Slider } from '../../components/ui/Slider.tsx'
 import { Toggle } from '../../components/ui/Toggle.tsx'
 import { useStatusBanner } from '../../components/ui/StatusBanner.tsx'
 import { useToast } from '../../components/ui/Toast.tsx'
-
-const viewOptions = [
-  { label: 'List', value: 'list' },
-  { label: 'Grid', value: 'grid' },
-] as const
 
 const iconViewOptions = [
   { label: 'Grid view', value: 'grid', icon: <LayoutGrid size={17} /> },
@@ -106,12 +100,6 @@ export function StyleguideComponents({ theme }: { theme: 'light' | 'dark' }) {
           label="Show reading progress"
           checked={toggleOn}
           onChange={setToggleOn}
-        />
-        <SegmentedControl
-          label="Library view"
-          value={view}
-          options={viewOptions}
-          onChange={setView}
         />
         <IconToggle
           label="Grid or list layout"

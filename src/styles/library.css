@@ -95,7 +95,7 @@
   max-width: 52ch;
 }
 
-.library-import__dropzone.ui-button {
+.library-import__dropzone {
   display: grid;
   width: 100%;
   min-height: 12rem;
@@ -103,16 +103,20 @@
   align-content: center;
   gap: 0.75rem;
   border: 1px dashed color-mix(in srgb, var(--accent) 70%, var(--border-color));
+  border-radius: 0.25rem;
   padding: 1.5rem;
   text-align: center;
   white-space: normal;
+  transition:
+    background-color var(--motion-fast, 120ms) var(--ease-standard, ease),
+    border-color var(--motion-fast, 120ms) var(--ease-standard, ease);
 }
 
-.library-import__dropzone.ui-button:hover:not(:disabled) {
+.library-import__dropzone:hover {
   background: color-mix(in srgb, var(--accent) 88%, var(--fg));
 }
 
-.library-import__dropzone.ui-button.is-dragging {
+.library-import__dropzone.is-dragging {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 82%, var(--bg));
 }
@@ -153,6 +157,12 @@
   justify-content: center;
 }
 
+.library-import__dropzone-hint {
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
 .library-group-series {
   display: grid;
   gap: 1rem;
@@ -185,6 +195,46 @@
   list-style: none;
 }
 
+.library-import-book {
+  min-width: 0;
+  border-top: 1px solid var(--border-color);
+  padding-block: 0.75rem;
+}
+
+.library-import-book__heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.625rem;
+  color: var(--fg);
+  font-size: 0.8125rem;
+  text-align: start;
+}
+
+.library-import-book__heading strong {
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+}
+
+.library-import-book__result {
+  flex: none;
+  color: var(--muted);
+  font-size: 0.6875rem;
+  font-weight: 400;
+}
+
+.library-import-book--error > .library-import-book__heading {
+  color: var(--warning);
+}
+
+.library-import-volumes {
+  margin: 0.25rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
 .library-import-item {
   display: grid;
   grid-template-columns: 1.25rem minmax(0, 1fr) auto;
@@ -209,6 +259,11 @@
 
 .library-import-item--success .library-import-item__icon {
   color: var(--accent);
+}
+
+.library-import-item--skipped .library-import-item__icon,
+.library-import-item--skipped .library-import-item__status {
+  color: var(--muted);
 }
 
 .library-cover-picker {

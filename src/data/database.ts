@@ -22,6 +22,7 @@ export type TableOfContentsEntry = {
 export type DatabaseBook = {
   id: string
   title: string
+  sourceTags?: string[]
   author: string
   seriesKey: string
   coverBlobId: string | null
@@ -38,10 +39,12 @@ export type DatabaseVolume = {
   bookId: string
   number: number
   title: string
+  dateAdded: string
   spineIndex: readonly SpineIndexEntry[]
   toc: readonly TableOfContentsEntry[]
   sourceFileHash: string | null
   fileId: string | null
+  coverBlobId?: string | null
   fileMissing: boolean
   sourceDirectoryId?: string
   sourceRelativePath?: string
@@ -58,7 +61,7 @@ export type DatabaseCover = {
   id: string
   blob: Blob
   size: number
-  kind: 'epub' | 'generated' | 'custom'
+  kind: 'epub' | 'folder' | 'generated' | 'custom'
 }
 
 export type ProgressPosition = {

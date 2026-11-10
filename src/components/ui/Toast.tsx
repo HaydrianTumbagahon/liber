@@ -12,6 +12,7 @@ export type ToastAction = {
 
 export type ToastOptions = {
   message: string
+  detail?: string
   variant?: ToastVariant
   action?: ToastAction
   duration?: number

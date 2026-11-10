@@ -11,6 +11,7 @@ import { parseEpubFile } from './epubParser.ts'
 import type { ParsedEpub } from './epubParser.ts'
 import { mockBooks } from './mockBooks.ts'
 import { registerEpubImportHandler, storageProvider } from '../lib/storage/index.ts'
+import { parseBookFolderName, parseVolumeNumber } from '../lib/storage/storageUtils.ts'
 
 function createId(prefix: string) {
   const randomId = globalThis.crypto?.randomUUID?.()
@@ -66,13 +67,16 @@ export type ImportEpubInput = {
   sourceDirectoryId?: string
   sourceRelativePath?: string
   bookFolderName?: string
+  volumeNumber?: number | null
+  bookCover?: Blob | null
+  targetBookId?: string
 }
 
 export type ImportEpubResult = {
   bookId: string
   title: string
   volumeNumber: number
-  outcome: 'added' | 'relinked' | 'already-present'
+  outcome: 'added' | 'merged' | 'relinked' | 'already-present'
 }
 
 export type DirectoryImportFileResult = {
@@ -166,14 +170,55 @@ export async function importParsedEpubFile({
   sourceDirectoryId,
   sourceRelativePath,
   bookFolderName,
+  volumeNumber: requestedVolumeNumber,
+  bookCover,
+  targetBookId,
 }: ImportEpubInput & { epub: ParsedEpub }): Promise<ImportEpubResult> {
   const sourceFileHash = epub.hash
-  const title = bookFolderName?.trim() || epub.seriesName?.trim() || epub.title
+  const parsedFolder = parseBookFolderName(
+    bookFolderName?.trim() || epub.seriesName?.trim() || epub.title,
+  )
+  const title = parsedFolder.title
   const author = epub.author
   const seriesKey = createSeriesKey(title, author)
   const now = new Date().toISOString()
   const cacheEpubBlob =
     !(sourceDirectoryId === 'app-root' && storageProvider.isConnected())
+
+  const targetBook = targetBookId ? await db.books.get(targetBookId) : undefined
+  if (targetBookId && targetBook) {
+    const sameHashVolume = sourceFileHash
+      ? await db.volumes
+          .filter(
+            (volume) =>
+              volume.bookId === targetBookId && volume.sourceFileHash === sourceFileHash,
+          )
+          .first()
+      : undefined
+    if (sameHashVolume) {
+      return {
+        bookId: targetBookId,
+        title: targetBook.title,
+        volumeNumber: sameHashVolume.number,
+        outcome: 'already-present',
+      }
+    }
+
+    if (sourceFileHash) {
+      const duplicateVolume = await db.volumes
+        .where('sourceFileHash')
+        .equals(sourceFileHash)
+        .first()
+      if (duplicateVolume && duplicateVolume.bookId !== targetBookId) {
+        return {
+          bookId: targetBookId,
+          title: targetBook.title,
+          volumeNumber: duplicateVolume.number,
+          outcome: 'already-present',
+        }
+      }
+    }
+  }
 
   return db.transaction(
     'rw',
@@ -196,15 +241,44 @@ export async function importParsedEpubFile({
               .equals([sourceDirectoryId, sourceRelativePath])
               .first()
           : undefined
-      let existingVolume = hashMatch ?? directoryMatch
+      const targetBookMatch = targetBookId ? await db.books.get(targetBookId) : undefined
+      let existingVolume = targetBookId
+        ? targetBookMatch
+          ? await db.volumes
+              .filter((volume) => {
+                if (volume.bookId !== targetBookId) return false
+                if (sourceFileHash) {
+                  return volume.sourceFileHash === sourceFileHash
+                }
+                const fallbackNumber =
+                  requestedVolumeNumber ?? parseVolumeNumber(file.name) ?? epub.volumeNumber
+                return fallbackNumber !== null && volume.number === fallbackNumber
+              })
+              .first()
+          : undefined
+        : hashMatch ?? directoryMatch
       const matchedSeries = await db.books
         .where('seriesKey')
         .equals(seriesKey)
         .first()
-      const existingBook = existingVolume
-        ? await db.books.get(existingVolume.bookId)
-        : matchedSeries
-      const bookId = existingBook?.id ?? createId('book')
+      const matchedFolderTitle = bookFolderName
+        ? await db.books
+            .filter(
+              (book) =>
+                normalizeIdentityPart(parseBookFolderName(book.title).title) ===
+                normalizeIdentityPart(title),
+            )
+            .first()
+        : undefined
+      const existingBook = targetBookId
+        ? targetBookMatch
+        : existingVolume
+          ? await db.books.get(existingVolume.bookId)
+          : (matchedFolderTitle ?? matchedSeries)
+      const mergedIntoExistingBook = Boolean(
+        matchedFolderTitle && !existingVolume,
+      )
+      const bookId = targetBookId ?? existingBook?.id ?? createId('book')
       const volumeId = existingVolume?.id ?? createId('volume')
       const relatedVolumes = await db.volumes
         .where('bookId')
@@ -220,6 +294,8 @@ export async function importParsedEpubFile({
       }
       const requestedNumber =
         existingVolume?.number ??
+        requestedVolumeNumber ??
+        parseVolumeNumber(file.name) ??
         epub.volumeNumber ??
         nextAvailableVolumeNumber(relatedVolumes)
       const numberConflict = relatedVolumes.some(
@@ -263,17 +339,30 @@ export async function importParsedEpubFile({
           sha256: sourceFileHash,
         })
       }
+      const previousVolumeCoverId = existingVolume?.coverBlobId ?? null
+      let volumeCoverBlobId = previousVolumeCoverId
+      if (epub.cover) {
+        volumeCoverBlobId = createId('cover')
+        await db.covers.put({
+          id: volumeCoverBlobId,
+          blob: epub.cover,
+          size: epub.cover.size,
+          kind: 'epub',
+        })
+      }
       await db.volumes.put({
         id: volumeId,
         stableKey,
         bookId,
         number: volumeNumber,
-        title: epub.volumeTitle,
+        title: epub.volumeTitle.trim() || parseBookFolderName(file.name.replace(/\.epub$/i, '')).title,
+        dateAdded: existingVolume?.dateAdded ?? now,
         spineIndex: epub.spineIndex,
         toc: epub.toc,
         sourceFileHash,
         fileId,
         fileMissing: false,
+        coverBlobId: volumeCoverBlobId,
         sourceDirectoryId:
           sourceDirectoryId ?? existingVolume?.sourceDirectoryId,
         sourceRelativePath:
@@ -283,20 +372,33 @@ export async function importParsedEpubFile({
       const priorCover = existingBook?.coverBlobId
         ? await db.covers.get(existingBook.coverBlobId)
         : undefined
+      const previousLowestVolumeNumber = relatedVolumes.reduce<number | null>(
+        (lowest, volume) =>
+          lowest === null ? volume.number : Math.min(lowest, volume.number),
+        null,
+      )
+      const isLowestVolume =
+        previousLowestVolumeNumber === null ||
+        volumeNumber <= previousLowestVolumeNumber
       const shouldUseVolumeCover =
+        Boolean(bookCover && priorCover?.kind !== 'folder') ||
         !existingBook?.coverBlobId ||
-        (volumeNumber === 1 && priorCover?.kind === 'generated')
+        (priorCover?.kind === 'generated' && Boolean(bookCover || epub.cover)) ||
+        (Boolean(epub.cover) && isLowestVolume && priorCover?.kind !== 'folder')
       let coverBlobId = existingBook?.coverBlobId ?? null
       if (shouldUseVolumeCover) {
         const coverId = createId('cover')
-        const useEpubCover = volumeNumber === 1 && epub.cover !== null
-        const coverBlob =
-          useEpubCover && epub.cover ? epub.cover : createFallbackCover(title)
+        const coverBlob = bookCover ?? epub.cover ?? createFallbackCover(title)
+        const coverKind = bookCover
+          ? 'folder'
+          : epub.cover
+            ? 'epub'
+            : 'generated'
         await db.covers.put({
           id: coverId,
           blob: coverBlob,
           size: coverBlob.size,
-          kind: useEpubCover ? 'epub' : 'generated',
+          kind: coverKind,
         })
         coverBlobId = coverId
       }
@@ -305,9 +407,21 @@ export async function importParsedEpubFile({
         .where('bookId')
         .equals(bookId)
         .toArray()
+      const existingFolderTags = existingBook
+        ? parseBookFolderName(existingBook.title).sourceTags
+        : []
       const book: DatabaseBook = {
         id: bookId,
-        title: bookFolderName?.trim() || existingBook?.title || title,
+        title: existingBook
+          ? parseBookFolderName(existingBook.title).title
+          : title,
+        sourceTags: [
+          ...new Set([
+            ...(existingBook?.sourceTags ?? []),
+            ...existingFolderTags,
+            ...parsedFolder.sourceTags,
+          ]),
+        ],
         author: existingBook?.author ?? author,
         seriesKey: bookFolderName?.trim()
           ? seriesKey
@@ -320,6 +434,13 @@ export async function importParsedEpubFile({
         missingFile: updatedVolumes.some((volume) => volume.fileMissing),
       }
       await db.books.put(book)
+
+      if (previousVolumeCoverId && previousVolumeCoverId !== volumeCoverBlobId) {
+        const stillUsed = await db.volumes
+          .filter((volume) => volume.coverBlobId === previousVolumeCoverId)
+          .count()
+        if (stillUsed === 0) await db.covers.delete(previousVolumeCoverId)
+      }
 
       const oldProgress =
         previousStableKey && previousStableKey !== stableKey
@@ -356,11 +477,15 @@ export async function importParsedEpubFile({
         coverBlobId !== existingBook?.coverBlobId &&
         existingBook?.coverBlobId
       ) {
-        const stillUsed = await db.books
-          .where('coverBlobId')
-          .equals(existingBook.coverBlobId)
-          .count()
-        if (stillUsed === 0) await db.covers.delete(existingBook.coverBlobId)
+        const [bookUses, volumeUses] = await Promise.all([
+          db.books.where('coverBlobId').equals(existingBook.coverBlobId).count(),
+          db.volumes
+            .filter((volume) => volume.coverBlobId === existingBook.coverBlobId)
+            .count(),
+        ])
+        if (bookUses === 0 && volumeUses === 0) {
+          await db.covers.delete(existingBook.coverBlobId)
+        }
       }
 
       return {
@@ -370,7 +495,9 @@ export async function importParsedEpubFile({
         volumeNumber,
         outcome: alreadyPresent
           ? 'already-present'
-          : existingVolume
+          : mergedIntoExistingBook
+            ? 'merged'
+            : existingVolume
             ? 'relinked'
             : 'added',
       }
@@ -679,11 +806,11 @@ export async function saveCoverForBooks(
     }
 
     for (const previousId of previousCoverIds) {
-      const stillUsed = await db.books
-        .where('coverBlobId')
-        .equals(previousId)
-        .count()
-      if (stillUsed === 0) await db.covers.delete(previousId)
+      const [bookUses, volumeUses] = await Promise.all([
+        db.books.where('coverBlobId').equals(previousId).count(),
+        db.volumes.filter((volume) => volume.coverBlobId === previousId).count(),
+      ])
+      if (bookUses === 0 && volumeUses === 0) await db.covers.delete(previousId)
     }
 
     return coverId
@@ -728,6 +855,7 @@ export async function deleteBooks(bookIds: readonly string[]) {
         if (book?.coverBlobId) candidateCoverIds.add(book.coverBlobId)
         volumes.forEach((volume) => {
           if (volume.fileId) candidateFileIds.add(volume.fileId)
+          if (volume.coverBlobId) candidateCoverIds.add(volume.coverBlobId)
         })
         await db.progress.bulkDelete(volumes.map((volume) => volume.stableKey))
         await db.volumes.where('bookId').equals(bookId).delete()
@@ -743,11 +871,11 @@ export async function deleteBooks(bookIds: readonly string[]) {
       }
 
       for (const coverId of candidateCoverIds) {
-        const stillUsed = await db.books
-          .where('coverBlobId')
-          .equals(coverId)
-          .count()
-        if (stillUsed === 0) await db.covers.delete(coverId)
+        const [bookUses, volumeUses] = await Promise.all([
+          db.books.where('coverBlobId').equals(coverId).count(),
+          db.volumes.filter((volume) => volume.coverBlobId === coverId).count(),
+        ])
+        if (bookUses === 0 && volumeUses === 0) await db.covers.delete(coverId)
       }
     },
   )
@@ -828,11 +956,11 @@ export async function groupBooksIntoSeries(
       await db.books.bulkDelete(sources.map((book) => book.id))
 
       for (const coverId of oldCoverIds) {
-        const stillUsed = await db.books
-          .where('coverBlobId')
-          .equals(coverId)
-          .count()
-        if (stillUsed === 0) await db.covers.delete(coverId)
+        const [bookUses, volumeUses] = await Promise.all([
+          db.books.where('coverBlobId').equals(coverId).count(),
+          db.volumes.filter((volume) => volume.coverBlobId === coverId).count(),
+        ])
+        if (bookUses === 0 && volumeUses === 0) await db.covers.delete(coverId)
       }
 
       return target.id
@@ -948,6 +1076,7 @@ export async function seedMockLibrary() {
           bookId: mockBook.id,
           number: volume.number,
           title: volume.title,
+          dateAdded: mockBook.dateAdded,
           spineIndex: [],
           toc: [],
           sourceFileHash: null,

@@ -1,5 +1,6 @@
 import { db } from '../../data/database.ts'
 import { parseEpubFile } from '../../data/epubParser.ts'
+import type { ParsedEpub } from '../../data/epubParser.ts'
 import type {
   DatabaseBook,
   DatabaseProgress,
@@ -8,6 +9,7 @@ import type {
 import { defaultSettings } from '../theme.tsx'
 import type {
   EpubImportHandler,
+  LibraryCopyResult,
   LibraryScanResult,
   StorageBackup,
   StorageProvider,
@@ -108,18 +110,36 @@ export class FallbackStorageProvider implements StorageProvider {
     })
   }
 
-  async copyIntoLibrary(files: readonly File[], bookFolderName: string) {
+  async copyIntoLibrary(
+    files: readonly File[],
+    bookFolderName: string,
+    options: {
+      folderCover?: File | null
+      volumeNumbers?: readonly (number | null)[]
+      parsedEpubs?: readonly ParsedEpub[]
+    } = {},
+  ): Promise<LibraryCopyResult[]> {
     if (!this.importEpub) throw new Error('The EPUB importer is unavailable.')
-    const paths: string[] = []
-    for (const file of files) {
+    const results: LibraryCopyResult[] = []
+    for (const [index, file] of files.entries()) {
       if (!file.name.toLowerCase().endsWith('.epub') || file.size === 0) {
         throw new Error(`Choose a non-empty EPUB file: ${file.name}`)
       }
-      const epub = await parseEpubFile(file)
-      await this.importEpub({ file, epub, bookFolderName })
-      paths.push(`${bookFolderName}/${file.name}`)
+      const epub = options.parsedEpubs?.[index] ?? (await parseEpubFile(file))
+      const result = await this.importEpub({
+        file,
+        epub,
+        bookFolderName,
+        volumeNumber: options.volumeNumbers?.[index],
+        bookCover: index === 0 ? options.folderCover : null,
+      })
+      results.push({
+        path: `${bookFolderName}/${file.name}`,
+        skipped: result.outcome === 'already-present',
+        outcome: result.outcome,
+      })
     }
-    return paths
+    return results
   }
 
   async deleteLibraryFiles(

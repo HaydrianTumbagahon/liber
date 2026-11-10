@@ -3,6 +3,8 @@ import type { TouchEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { motion, useReducedMotion } from 'framer-motion'
 import {
+  ArrowDown,
+  ArrowUp,
   BookPlus,
   ImagePlus,
   Layers,
@@ -22,13 +24,11 @@ import { useToast } from '../../components/ui/Toast.tsx'
 import { useStatusBanner } from '../../components/ui/StatusBanner.tsx'
 import type { ToastVariant } from '../../components/ui/Toast.tsx'
 import { parseEpubFile } from '../../data/epubParser.ts'
-import type {
-  DirectoryImportResult,
-  ImportEpubResult,
-} from '../../data/libraryRepository.ts'
+import type { ImportEpubResult } from '../../data/libraryRepository.ts'
 import { Tooltip } from '../../components/ui/Tooltip.tsx'
 import { useSettings } from '../../lib/theme.tsx'
 import { storageProvider } from '../../lib/storage/index.ts'
+import { parseVolumeNumber } from '../../lib/storage/storageUtils.ts'
 import type { LibraryLayout, LibrarySort } from '../../lib/theme.tsx'
 import { useLibrary } from './useLibrary.ts'
 import {
@@ -49,8 +49,7 @@ import { GroupBooksDialog } from './GroupBooksDialog.tsx'
 import {
   deleteBooks as deleteBooksFromStorage,
   groupBooksIntoSeries,
-  importEpubDirectory,
-  importEpubFile,
+  importParsedEpubFile,
   resyncLibrary,
   saveCoverForBooks,
 } from '../../data/libraryRepository.ts'
@@ -81,6 +80,10 @@ const sortOptions: { label: string; value: SortMode }[] = [
   { label: 'Author', value: 'author' },
 ]
 
+function applySortDirection(value: number, direction: 'asc' | 'desc') {
+  return direction === 'asc' ? value : -value
+}
+
 const completionOrder: Record<BookStatus, number> = {
   completed: 0,
   'in-progress': 1,
@@ -93,25 +96,36 @@ function compareDatesDescending(first: string | null, second: string | null) {
   return new Date(second).getTime() - new Date(first).getTime()
 }
 
-function sortBooks(books: readonly Book[], sortMode: SortMode) {
+function sortBooks(
+  books: readonly Book[],
+  sortMode: SortMode,
+  direction: 'asc' | 'desc' = 'asc',
+) {
   return [...books].sort((first, second) => {
+    let comparison = 0
     switch (sortMode) {
       case 'date-added':
-        return compareDatesDescending(first.dateAdded, second.dateAdded)
+        comparison = compareDatesDescending(first.dateAdded, second.dateAdded)
+        break
       case 'date-modified':
-        return compareDatesDescending(first.dateModified, second.dateModified)
+        comparison = compareDatesDescending(first.dateModified, second.dateModified)
+        break
       case 'last-read':
-        return compareDatesDescending(first.lastRead, second.lastRead)
+        comparison = compareDatesDescending(first.lastRead, second.lastRead)
+        break
       case 'completed':
-        return (
+        comparison =
           completionOrder[first.status] - completionOrder[second.status] ||
           compareDatesDescending(first.lastRead, second.lastRead)
-        )
+        break
       case 'title':
-        return first.title.localeCompare(second.title)
+        comparison = first.title.localeCompare(second.title)
+        break
       case 'author':
-        return first.author.localeCompare(second.author)
+        comparison = first.author.localeCompare(second.author)
+        break
     }
+    return applySortDirection(comparison, direction)
   })
 }
 
@@ -185,47 +199,6 @@ function safeBookFolderName(title: string, fileName: string) {
   return cleaned && cleaned !== '.' && cleaned !== '..' ? cleaned : 'Untitled book'
 }
 
-async function inferBookFolderName(file: File) {
-  const parsed = await parseEpubFile(file)
-  return safeBookFolderName(parsed.seriesName?.trim() || parsed.title, file.name)
-}
-
-async function collectFolderImports(directory: FileSystemDirectoryHandle) {
-  const groups = new Map<string, File[]>()
-  const errors: DirectoryImportResult['files'] = []
-
-  const visit = async (
-    current: FileSystemDirectoryHandle,
-    inheritedFolderName?: string,
-  ): Promise<void> => {
-    for await (const [name, entry] of current.entries()) {
-      if (entry.kind === 'directory') {
-        await visit(entry, inheritedFolderName ?? name)
-        continue
-      }
-      if (!name.toLowerCase().endsWith('.epub')) continue
-
-      const file = await entry.getFile()
-      try {
-        const folderName = inheritedFolderName ?? (await inferBookFolderName(file))
-        const files = groups.get(folderName) ?? []
-        files.push(file)
-        groups.set(folderName, files)
-      } catch (error) {
-        errors.push({
-          name,
-          outcome: null,
-          errorMessage:
-            error instanceof Error ? error.message : 'Could not read this EPUB.',
-        })
-      }
-    }
-  }
-
-  await visit(directory)
-  return { groups, errors }
-}
-
 function LibrarySkeleton({ view }: { view: ViewMode }) {
   return (
     <div
@@ -252,6 +225,7 @@ export function LibraryPage() {
   const reduceMotion = useReducedMotion()
   const [view, setView] = useState<ViewMode>(() => settings.libraryLayout)
   const [sortMode, setSortMode] = useState<SortMode>(() => settings.librarySort)
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>(() => settings.librarySortDirection)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
   const [refreshing, setRefreshing] = useState(false)
   const [addDialogOpen, setAddDialogOpen] = useState(false)
@@ -265,13 +239,15 @@ export function LibraryPage() {
   const touchStartY = useRef<number | null>(null)
   const emptyPreview = searchParams.get('empty') === '1'
   const visibleBooks = useMemo(
-    () => sortBooks(emptyPreview ? [] : library, sortMode),
-    [emptyPreview, library, sortMode],
+    () =>
+      sortBooks(emptyPreview ? [] : library, sortMode, sortDirection),
+    [emptyPreview, library, sortMode, sortDirection],
   )
   const selectionMode = selectedIds.size > 0
 
   useEffect(() => setView(settings.libraryLayout), [settings.libraryLayout])
   useEffect(() => setSortMode(settings.librarySort), [settings.librarySort])
+  useEffect(() => setSortDirection(settings.librarySortDirection), [settings.librarySortDirection])
   useEffect(() => {
     if (visibleBooks.length > 0) hasAnimatedCards.current = true
   }, [visibleBooks.length])
@@ -336,16 +312,37 @@ export function LibraryPage() {
     if (endY !== undefined && endY - startY > 88) void refresh()
   }
 
-  const addImportedBook = async (file: File) => {
-    if (!storageProvider.isConnected()) return importEpubFile({ file })
+  const addImportedBook = async (
+    file: File,
+    sourceFolderName?: string,
+    folderCover?: File | null,
+  ): Promise<ImportEpubResult> => {
+    const epub = await parseEpubFile(file)
+    const bookFolderName = sourceFolderName?.trim()
+      ? safeBookFolderName(sourceFolderName, file.name)
+      : safeBookFolderName(epub.seriesName?.trim() || epub.title, file.name)
+    const volumeNumber = parseVolumeNumber(file.name) ?? epub.volumeNumber
+    if (!storageProvider.isConnected()) {
+      return importParsedEpubFile({
+        file,
+        epub,
+        bookFolderName,
+        volumeNumber,
+        bookCover: folderCover,
+      })
+    }
 
-    const bookFolderName = await inferBookFolderName(file)
-    const [path] = await storageProvider.copyIntoLibrary([file], bookFolderName)
+    const [copyResult] = await storageProvider.copyIntoLibrary(
+      [file],
+      bookFolderName,
+      { folderCover, volumeNumbers: [volumeNumber], parsedEpubs: [epub] },
+    )
+    if (!copyResult) throw new Error('The imported EPUB was not copied.')
     const result = await storageProvider.listLibrary()
     const volume = result.volumes.find(
       (candidate) =>
         candidate.sourceDirectoryId === 'app-root' &&
-        candidate.sourceRelativePath === path,
+        candidate.sourceRelativePath === copyResult.path,
     )
     const book = volume
       ? result.books.find((candidate) => candidate.id === volume.bookId)
@@ -355,57 +352,9 @@ export function LibraryPage() {
       bookId: book.id,
       title: book.title,
       volumeNumber: volume.number,
-      outcome: 'added',
+      outcome:
+        copyResult.outcome ?? (copyResult.skipped ? 'already-present' : 'added'),
     } satisfies ImportEpubResult
-  }
-
-  const addImportedDirectory = async (
-    directory: FileSystemDirectoryHandle,
-  ): Promise<DirectoryImportResult> => {
-    if (!storageProvider.isConnected()) return importEpubDirectory(directory)
-
-    const { groups, errors } = await collectFolderImports(directory)
-    const files = [...errors]
-    const foundPaths: string[] = []
-    for (const [bookFolderName, epubFiles] of groups) {
-      try {
-        const paths = await storageProvider.copyIntoLibrary(
-          epubFiles,
-          bookFolderName,
-        )
-        foundPaths.push(...paths)
-        const result = await storageProvider.listLibrary()
-        for (const path of paths) {
-          const volume = result.volumes.find(
-            (candidate) => candidate.sourceRelativePath === path,
-          )
-          const book = volume
-            ? result.books.find((candidate) => candidate.id === volume.bookId)
-            : undefined
-          files.push({
-            name: path,
-            outcome: volume && book ? 'added' : null,
-            errorMessage:
-              volume && book ? null : 'The imported EPUB was not indexed.',
-          })
-        }
-      } catch (error) {
-        for (const file of epubFiles) {
-          files.push({
-            name: file.name,
-            outcome: null,
-            errorMessage:
-              error instanceof Error ? error.message : 'Could not copy this EPUB.',
-          })
-        }
-      }
-    }
-    return {
-      files,
-      permissionDenied: false,
-      foundPaths,
-      scanComplete: true,
-    }
   }
 
   const deleteSelectedBooks = async () => {
@@ -504,7 +453,7 @@ export function LibraryPage() {
                   />
                 )}
                 <BookPlus size={16} aria-hidden="true" />
-                Add books
+                Add light novels
               </Button>
             )}
             <div className="library-resync-desktop">
@@ -542,6 +491,31 @@ export function LibraryPage() {
                 }}
               />
             </div>
+            <Tooltip content={sortDirection === 'asc' ? 'Ascending' : 'Descending'}>
+              <IconButton
+                label={sortDirection === 'asc' ? 'Ascending order' : 'Descending order'}
+                className="library-sort__direction"
+                onClick={() => {
+                  const nextDirection = sortDirection === 'asc' ? 'desc' : 'asc'
+                  setSortDirection(nextDirection)
+                  void updateSettings({ librarySortDirection: nextDirection }).catch(() =>
+                    notify('Could not save the library sort direction.', 'error'),
+                  )
+                }}
+              >
+                <motion.span
+                  animate={{ rotate: sortDirection === 'asc' ? 0 : 180 }}
+                  transition={{ duration: 0.18, ease: 'easeInOut' }}
+                  style={{ display: 'inline-flex' }}
+                >
+                  {sortDirection === 'asc' ? (
+                    <ArrowUp size={17} aria-hidden="true" />
+                  ) : (
+                    <ArrowDown size={17} aria-hidden="true" />
+                  )}
+                </motion.span>
+              </IconButton>
+            </Tooltip>
             <IconToggle<ViewMode>
               label="Library view"
               value={view}
@@ -596,7 +570,6 @@ export function LibraryPage() {
         onOpenChange={setAddDialogOpen}
         layoutId={addDialogLayoutId}
         onImport={addImportedBook}
-        onImportDirectory={addImportedDirectory}
         onImportComplete={notify}
       />
       <CoverDialog

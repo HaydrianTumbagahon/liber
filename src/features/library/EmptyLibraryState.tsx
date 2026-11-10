@@ -62,7 +62,7 @@ export function EmptyLibraryState({
       </h2>
       <p className="library-empty__prompt">
         {folderStorage
-          ? 'Copy book folders into liber/library/ or use Add Books, then select Resync.'
+          ? 'Copy book folders into liber/library/ or use Add light novels, then select Resync.'
           : 'Add your first light novel'}
       </p>
       <Button
@@ -78,7 +78,7 @@ export function EmptyLibraryState({
             aria-hidden="true"
           />
         )}
-        <span className="library-empty__add-label">Choose an EPUB</span>
+        <span className="library-empty__add-label">Add light novels</span>
       </Button>
     </section>
   )

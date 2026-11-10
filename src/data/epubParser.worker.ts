@@ -104,6 +104,67 @@ async function readEntryBlob(entry: ArchiveEntry, mediaType: string) {
   return entry.getData(new BlobWriter(mediaType))
 }
 
+function firstImageReference(xhtml: string) {
+  const image = elements(xhtml, 'img').find((item) => item.attributes.has('src'))
+  if (image) return image.attributes.get('src') ?? null
+  const svgImage = elements(xhtml, 'image').find((item) =>
+    [...item.attributes.keys()].some(
+      (key) => key === 'href' || key.endsWith(':href'),
+    ),
+  )
+  if (!svgImage) return null
+  const [attribute] = [...svgImage.attributes.entries()].find(
+    ([key]) => key === 'href' || key.endsWith(':href'),
+  ) ?? []
+  return attribute ? svgImage.attributes.get(attribute) ?? null : null
+}
+
+function isImagePath(path: string, mediaType = '') {
+  return (
+    mediaType.toLowerCase().startsWith('image/') ||
+    /\.(?:jpe?g|png|webp|gif|svg)$/i.test(path)
+  )
+}
+
+function mediaTypeForPath(path: string, manifestItems: readonly {
+  href: string
+  mediaType: string
+}[], opfPath: string) {
+  return (
+    manifestItems.find(
+      (item) => resolveArchivePath(opfPath, item.href) === path,
+    )?.mediaType ??
+    (path.toLowerCase().endsWith('.png')
+      ? 'image/png'
+      : path.toLowerCase().endsWith('.webp')
+        ? 'image/webp'
+        : path.toLowerCase().endsWith('.svg')
+          ? 'image/svg+xml'
+          : 'image/jpeg')
+  )
+}
+
+function fallbackTitle(fileName: string) {
+  let title = fileName.replace(/\\/g, '/').split('/').pop() ?? fileName
+  title = title.replace(/\.epub$/i, '')
+  const bracketPairs = new Map([
+    [']', '['],
+    [')', '('],
+    ['】', '【'],
+    ['}', '{'],
+  ])
+  for (;;) {
+    const end = title.trimEnd()
+    const closing = end.at(-1)
+    const opening = closing ? bracketPairs.get(closing) : undefined
+    if (!opening) break
+    const openingIndex = end.lastIndexOf(opening)
+    if (openingIndex < 0) break
+    title = end.slice(0, openingIndex).trimEnd()
+  }
+  return title.trim() || 'Untitled volume'
+}
+
 function getSeriesMetadata(packageXml: string) {
   let seriesName: string | null = null
   let volumeNumber: number | null = null
@@ -306,25 +367,62 @@ async function parseEpub(file: File): Promise<ParsedEpub> {
       })
     }
 
-    const title = textContent(elements(packageXml, 'title')[0]?.content ?? '')
+    const metadataTitle = textContent(
+      elements(packageXml, 'title')[0]?.content ?? '',
+    )
+    const title = metadataTitle || fallbackTitle(file.name)
     const author = textContent(
       elements(packageXml, 'creator')[0]?.content ?? '',
     )
-    if (!title) throw new Error('Missing EPUB title')
-
     const series = getSeriesMetadata(packageXml)
     const legacyCoverId = elements(packageXml, 'meta')
       .find((meta) => meta.attributes.get('name')?.toLowerCase() === 'cover')
       ?.attributes.get('content')
-    const coverItem =
-      manifestItems.find((item) => item.properties.includes('cover-image')) ??
-      manifestItems.find((item) => item.id === legacyCoverId)
-    const coverEntry = coverItem
-      ? entryByName.get(resolveArchivePath(opfPath, coverItem.href))
-      : undefined
-    const cover = coverEntry
-      ? await readEntryBlob(coverEntry, coverItem?.mediaType || 'image/jpeg')
-      : null
+    const coverItems = [
+      ...manifestItems.filter((item) => item.properties.includes('cover-image')),
+      ...manifestItems.filter((item) => item.id === legacyCoverId),
+    ]
+    const guideCoverHref = elements(packageXml, 'reference').find(
+      (reference) => reference.attributes.get('type')?.toLowerCase() === 'cover',
+    )?.attributes.get('href')
+    const coverPaths = [
+      ...coverItems.map((item) => resolveArchivePath(opfPath, item.href)),
+      ...(guideCoverHref ? [resolveArchivePath(opfPath, guideCoverHref)] : []),
+    ]
+    let cover: Blob | null = null
+    const readCoverPath = async (path: string) => {
+      const entry = entryByName.get(path)
+      const mediaType = mediaTypeForPath(path, manifestItems, opfPath)
+      if (!entry || !isImagePath(path, mediaType)) return null
+      try {
+        return await readEntryBlob(entry, mediaType)
+      } catch {
+        return null
+      }
+    }
+    for (const path of coverPaths) {
+      cover = await readCoverPath(path)
+      if (cover) break
+    }
+
+    const pagePaths = [
+      ...(guideCoverHref ? [resolveArchivePath(opfPath, guideCoverHref)] : []),
+      ...(spineIndex[0] ? [spineIndex[0].href] : []),
+    ]
+    for (const pagePath of pagePaths) {
+      if (cover) break
+      const pageEntry = entryByName.get(pagePath)
+      if (!pageEntry || isImagePath(pagePath)) continue
+      try {
+        const pageMarkup = await readEntryText(pageEntry)
+        const imageHref = firstImageReference(pageMarkup)
+        if (!imageHref || /^(?:[a-z]+:|\/\/|data:)/i.test(imageHref)) continue
+        const imagePath = resolveArchivePath(pagePath, imageHref)
+        cover = await readCoverPath(imagePath)
+      } catch {
+        cover = null
+      }
+    }
 
     const navItem = manifestItems.find((item) =>
       item.properties.includes('nav'),
